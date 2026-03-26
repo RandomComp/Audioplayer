@@ -1,0 +1,7 @@
+pyaudio
+numpy
+pydub
+plyer
+matplotlib
+rich
+
