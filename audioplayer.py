@@ -1,4 +1,4 @@
-import pyaudio
+import audiostream
 
 import numpy as np
 
@@ -10,19 +10,15 @@ from matplotlib import pyplot
 
 import asyncio
 
-import sys
-
 import os
 
 from platform import system
 
-from mp3tag import id3tag
+import ansi
 
-from ansi import *
+import utils
 
-from utils import *
-
-from filechooser import FileChooser
+import math
 
 system_name = system().lower()
 
@@ -43,26 +39,23 @@ async def show_graph(snippet: bytes | list | np.ndarray, samples: int=-1):
 
 	return await loop.run_in_executor(None, pyplot.show)
 
-async def stream_awrite(stream: pyaudio.Stream, _snippet: bytes | list | np.ndarray, samples: int=-1):
-	if not stream:
-		raise IOError("Stream is invalid.")
+def show_device_info(device: dict):
+	print(f"Device name: {ansi.green}\"{device['name']}\"{ansi.default}")
+
+	print(f"    Device index: {ansi.cyan}{device['index']}{ansi.default}")
+
+	print(f"    Device max output channels: {ansi.cyan}{device['maxOutputChannels']}{ansi.default}")
+
+	print(f"    Device default output latency: {ansi.cyan}{device['defaultHighOutputLatency']:.4}{ansi.default} - {ansi.cyan}{device['defaultLowOutputLatency']:.4}{ansi.default} ms")
+
+	print(f"    Device default sample rate: {ansi.cyan}{device['defaultSampleRate']}{ansi.default}")
 	
-	snippet = _snippet.copy()
-	
-	snippet_len = int(len(snippet) // 2)
-	
-	if not snippet_len or samples == 0: return
-
-	if samples == -1: samples = snippet_len
-
-	loop = asyncio.get_running_loop()
-
-	return await loop.run_in_executor(None, stream.write, snippet, snippet_len)
-
 class AudioPlayer:
 	supported_extensions = (".mp4", ".mp3", ".wav", ".ogg", ".aac")
 
-	def __init__(self, file: Path | str="", paused: bool=False, silent: bool=False):
+	def __init__(self, file: Path | str="", silent: bool=False, extra_volume: bool=False, mock: bool=False):
+		# non for edit members:
+
 		self.is_playing = asyncio.Event()
 
 		self.seek = asyncio.Event()
@@ -73,228 +66,415 @@ class AudioPlayer:
 
 		self.ready_to_quit = asyncio.Event()
 
-		self.silent = silent
+		self.closed = asyncio.Event()
+
+		self.update_processing = asyncio.Event()
+
+		self.update_display = utils.EventEmitter("update_display")
+
+		self.__lines_outputed = 0
+		
+		self.progress_bar_c = "━"
+
+		self.stream = None
+
+		self.write_proc = None
+
+		self.sound = None
+
+		# for user members:
 
 		self.file = Path(file)
 
-		self.audio = pyaudio.PyAudio()
+		self.silent = silent
 
 		self.second = 0
 
-		self.volume = 1
+		self.seconds = 0
 
-		self.frame_end = False
-
-		self.mock = False
+		self.volume = 0.5
 
 		self.frame_rate = 44100
 
 		self.channels = 2
+
+		self.play_speed = 1
+
+		self.chunk_seconds = 0.3
+
+		self.mock = mock
 		
-		self.is_playing.set()
+		self.extra_volume = extra_volume
 		
+	async def open(self) -> None:
 		if not self.silent:
 			print("AudioPlayer initializing...")
 
-			print("Available sound devices for playback:\n")
+			# print("Available sound devices for playback:\n")
 
-			for i in range(self.audio.get_device_count()):
-				device = self.audio.get_device_info_by_index(i)
+			# for i in range(self.audio.get_device_count()):
+			# 	device = self.audio.get_device_info_by_index(i)
 
-				if (device['maxOutputChannels'] == 0): continue
+			# 	if (device['maxOutputChannels'] == 0): continue
 
-				self.show_device_info(device)
+			# 	show_device_info(device)
 
-				print()
+			# 	print()
 
 			print("Using default sound device for playback...")
 
-		self.show_device_info(self.audio.get_default_output_device_info())
+		self.write_proc = None
 
-		self.stream = None
+		self.sound = None
 
-		self.reopen_stream()
+		self.update_display.subscribe(self.display_update)
+
+		await self.open_stream()
+
+		show_device_info(self.stream.port.get_default_output_device_info())
 	
-	def reopen_stream(self):
+	async def open_stream(self):
 		if self.stream:
 			if not self.silent:
-				print("Stream reopening... ", end='')
+				utils.print("Stream reopening... ", end='')
 
-			self.stream.stop_stream()
-
-			self.stream.close()
+			await self.stream.close()
 
 			self.stream = None
 		elif not self.silent:
-			print("Stream opening... ", end='')
+			utils.print("Stream opening... ", end='')
 
-		if not self.audio:
-			print("error")
+		self.stream = audiostream.AudioStream(self.frame_rate, self.channels, dtype=audiostream.paFloat32, input=False, chunked=False)
 
-			print("Cannot open the stream: PyAudio not initialized")
-		else:
-			self.stream = self.audio.open(self.frame_rate, self.channels, pyaudio.paFloat32, output=True)
+		self.stream.open()
 
-			print("done")
+		utils.print("done")
 	
-	def show_device_info(self, device: dict):
-		if self.silent: return
+	def __output(self, *values: object, sep: str=" ", end: str="\n") -> None:
+		string = f"{sep.join(map(str, values))}{end}"
 
-		print(f"Device name: {green}\"{device['name']}\"{default}")
+		self.__lines_outputed += len(string.splitlines())
 
-		print(f"    Device index: {cyan}{device['index']}{default}")
-
-		print(f"    Device max output channels: {cyan}{device['maxOutputChannels']}{default}")
-
-		print(f"    Device default output latency: {cyan}{device['defaultHighOutputLatency']:.4}{default} - {cyan}{device['defaultLowOutputLatency']:.4}{default} ms")
-
-		print(f"    Device default sample rate: {cyan}{device['defaultSampleRate']}{default}")
+		utils.print(string, end='')
 	
-	async def play_audio(self):
+	def update(self) -> None:
+		#columns, rows = utils.get_terminal_size()
+
+		#for _ in range(self.__lines_outputed, rows):
+		#	utils.print("\r".ljust(columns))
+
+		#self.lines_outputed = 0
+
+		utils.set_cursor_pos(0, 0)
+	
+	def display_volume(self, volume: float, columns: int) -> None:
+		volume_max_width = columns
+
+		volume_width = int(volume * volume_max_width)
+
+		volume_mess = f"{ansi.cyan}{self.progress_bar_c * volume_width}{ansi.default}{self.progress_bar_c * (volume_max_width - volume_width)}"
+					
+		self.__output(f"\r{ansi.clear}{volume_mess}")
+
+		volume_status_mess = f"volume {int(volume * 100)}%"
+					
+		self.__output(f"\r{ansi.clear}{utils.center(volume_status_mess, columns)}")
+	
+	def display_progress(self, second: float, seconds: float, columns: int) -> None:
+		seconds_str = utils.format_time(seconds)
+
+		seconds_str_len = len(seconds_str)
+
+		progress_max_width = columns - seconds_str_len * 2 - 1
+
+		second_str = utils.format_time(second)
+
+		width = int((second / seconds if seconds > 0 else 1) * progress_max_width)
+
+		progress_bar = f"{ansi.default}{ansi.lime_fg}{self.progress_bar_c * width}{ansi.default}{self.progress_bar_c * (progress_max_width - width)}"
+
+		mess = f"{utils.ljust(second_str, seconds_str_len)}{progress_bar} {seconds_str}"
+					
+		self.__output(f"\r{ansi.clear}{mess}")
+
+	def display_update(self, event_name: str) -> None:
+		if self.update_processing.is_set():
+			return
+
+		self.update_processing.set()
+
+		columns, rows = utils.get_terminal_size()
+
+		self.__output(f"Press {ansi.bold}space{ansi.default} to play/stop")
+
+		self.__output(f"Press {ansi.lime_fg}s{ansi.default} to seek")
+
+		self.__output(f"Use {ansi.lime_fg}←→{ansi.default} to seek the audio")
+
+		self.__output(f"Use {ansi.lime_fg}↑↓{ansi.default} to control the audio volume")
+
+		self.__output(f"Press {ansi.lime_fg}q{ansi.default} to quit")
+
+		self.display_volume(self.volume, columns)
+
+		utils.set_cursor_pos(0, rows - 1)
+
+		self.display_progress(self.second, self.seconds, columns)
+
+		self.update()
+
+		self.update_processing.clear()
+
+	async def load(self) -> None:
 		if not self.silent:
-			print(f"Playback file: \"{self.file}\"")
+			self.__output(f"Playback file: \"{self.file}\"")
 
-			print(f"Loading... ", end="")
-
-			if not self.stream:
-				print("error")
-
-				print(f"Cannot play the audio: self.stream (aka {self.stream}) invalid")
-
-				return
+			self.__output(f"Loading... ", end="")
 
 		try:
-			sound = pydub.AudioSegment.from_file(self.file)
+			self.sound = pydub.AudioSegment.from_file(self.file)
 		except pydub.exceptions.CouldntDecodeError:
 			if not self.silent:
-				print("error")
+				self.__output("error")
 
-				print(f"{self.file.name} is not valid audio file")
+				raise RuntimeError(f"\"{self.file}\" is not valid audio file")
 
 			self.playback_error.set()
 
 			return
 
 		if not self.silent:
-			print("done")
+			self.__output("done")
 
-		seconds = int(sound.duration_seconds)
+		self.seconds = self.sound.duration_seconds
 
-		frame_rate = sound.frame_rate
+	async def play_loop(self):
+		if not self.stream:
+			raise RuntimeError(f"Cannot play the audio: self.stream (aka {self.stream}) invalid")
+		
+		if not self.sound:
+			raise RuntimeError(f"Cannot start the playing loop: no audio to play")
 
-		channels = sound.channels
+		if self.sound.frame_rate != self.frame_rate:
+			self.__output(f"Frame rate mismatch between the sound ({self.sound.frame_rate}) and the speaker ({self.frame_rate}), reconfiguration...")
 
-		frame_width = sound.frame_width
+			self.frame_rate = self.sound.frame_rate
 
-		sample_width = sound.sample_width
+			self.channels = self.sound.channels
 
-		if frame_rate != self.frame_rate:
-			print(f"Frame rate mismatch between the sound ({frame_rate}) and the speaker ({self.frame_rate}), reconfiguration...")
-
-			self.frame_rate = frame_rate
-
-			self.channels = channels
-
-			self.reopen_stream()
+			await self.open_stream()
 
 		if not self.silent:
-			print(f"Sound duration: {cyan}{format_time(seconds)}{default}")
-			print(f"Sound dBFS: {cyan}{sound.dBFS:.2} dB{default}")
-			print(f"Sound channels: {cyan}{channels}{default}")
-			print(f"Sound frame rate: {cyan}{frame_rate}{default}")
-			print(f"Sound frame width: {cyan}{frame_width}{default}")
-			print(f"Sound max sample: {cyan}{sound.max}{default}")
-			print(f"Sound max dBFS: {cyan}{sound.max_dBFS}{default}")
-			print(f"Sound max possible amplitude: {cyan}{sound.max_possible_amplitude}{default}")
-			print(f"Sound volume (rms): {cyan}{sound.rms}{default}")
-			print(f"Sound sample width: {cyan}{sample_width}{default}")
+			self.__output(f"Sound duration: {ansi.cyan}{utils.format_time(self.seconds)}{ansi.default}")
+			self.__output(f"Sound dBFS: {ansi.cyan}{self.sound.dBFS:.2} dB{ansi.default}")
+			self.__output(f"Sound channels: {ansi.cyan}{self.sound.channels}{ansi.default}")
+			self.__output(f"Sound frame rate: {ansi.cyan}{self.sound.frame_rate}{ansi.default}")
+			self.__output(f"Sound frame width: {ansi.cyan}{self.sound.frame_width}{ansi.default}")
+			self.__output(f"Sound max sample: {ansi.cyan}{self.sound.max}{ansi.default}")
+			self.__output(f"Sound max dBFS: {ansi.cyan}{self.sound.max_dBFS}{ansi.default}")
+			self.__output(f"Sound max possible amplitude: {ansi.cyan}{self.sound.max_possible_amplitude}{ansi.default}")
+			self.__output(f"Sound volume (rms): {ansi.cyan}{self.sound.rms}{ansi.default}")
+			self.__output(f"Sound sample width: {ansi.cyan}{self.sound.sample_width}{ansi.default}")
 
-			print()
-
-		self.stream.start_stream()
-
-		chunk_seconds = 0.1
-
-		sample_chunks = int(chunk_seconds * frame_rate * sample_width)
-
-		samples = sound.get_array_of_samples().tolist()
-
-		samples = np.asarray(samples, dtype=np.float32) / 32768
-
-		if not self.silent:
-			print(clear_screen)
-
-			print(f"Press {bold}space{default} to play/stop")
-
-			print(f"Press {green}'s'{default} to seek")
-
-			print(f"Press {green}'q'{default} to quit")
+			self.__output()
 		
-		progress_bar_c = "━"
+		self.__output(ansi.clear_screen, end='')
 
-		volume_c = "┃"
+		self.stream.start()
 
-		seconds_str = format_time(seconds)
+		sample_chunks = int(self.chunk_seconds * self.sound.frame_rate)
 
-		seconds_str_len = len(seconds_str)
+		samples = self.sound.get_array_of_samples().tolist()
 
-		max_percent = columns - seconds_str_len * 2 - 2
-
-		epsilon = max_percent / seconds
-
-		async def while_seek():
-			while self.seek.is_set():
-				
-				
-				await asyncio.sleep(0.1)
-		
-		second = self.second
+		samples = np.asarray(samples, dtype=np.float32) / (self.sound.max - 1)
 
 		try:
-			while second <= seconds and not self.playback_ended.is_set():
-				await asyncio.wait_for(self.is_playing.wait(), 3)
+			while self.second <= self.seconds and not self.playback_ended.is_set():
+				await self.is_playing.wait()
 
-				if self.seek.is_set(): await while_seek()
+				if not self.stream.is_playing.is_set():
+					raise RuntimeError("Playing loop is back, but audio output stream is stopped.")
 
-				#print(f"\r{format_time(second)} / {format_time(seconds)}", end='')
+				pos = int(self.second * self.sound.frame_rate * 2)
+				
+				self.snippet = np.clip(samples[pos:(pos + sample_chunks)] * math.pow(self.volume, 2), -1.0, 1.0)
 
-				second_str = format_time(second)
+				if self.write_proc and not self.write_proc.done():
+					await self.write_proc
 
-				percent = int(second / seconds * max_percent)
+					self.write_proc = None
+						
+				if self.mock:
+					self.write_proc = asyncio.create_task(asyncio.sleep(self.chunk_seconds))
+				else:
+					self.write_proc = asyncio.create_task(self.stream.write(self.snippet, sample_chunks, self.sound.sample_width))
 
-				progress_bar = f"{progress_bar_c * percent}{default}{progress_bar_c * (max_percent - percent)}"
-
-				mess = f"{second_str.ljust(seconds_str_len)}{lime_fg}{progress_bar} {seconds_str}"
-
-				print(f"\r\033[K{mess}", end='')
-
-				try:
-					pos = int(second * frame_rate * sample_width)
-					
-					snippet = samples[pos:(pos + sample_chunks)] * self.volume
-
-					if self.mock:
-						await asyncio.sleep(chunk_seconds)
-					else:
-						await stream_awrite(self.stream, snippet, sample_chunks)
-				except KeyboardInterrupt:
-					if not self.silent:
-						print("\nPlayback stopped...")
-
-					break
-
-				self.second += chunk_seconds
-			
-				second = self.second
+				self.second += self.chunk_seconds / 2
 		finally:
-			self.playback_ended.set()
+			if self.write_proc and not self.write_proc.done():
+				try:
+					await asyncio.wait_for(self.write_proc, self.chunk_seconds)
+				except TimeoutError:
+					pass
 
+				self.write_proc = None
+			
 			self.ready_to_quit.set()
+
+			await self.close()
 		
-		print()
+		self.__output()
 	
-	def reset(self) -> None:
-		print("AudioPlayer reseting...")
+	def play(self) -> None:
+		self.is_playing.set()
+	
+	def pause(self) -> None:
+		self.is_playing.clear()
+	
+	def volume_up(self, percent: float) -> None:
+		self.volume_set(self.volume_get() + percent)
+	
+	def volume_down(self, percent: float) -> None:
+		self.volume_set(self.volume_get() - percent)
+	
+	def volume_set(self, percent: float) -> None:
+		if percent < 0:
+			if not self.silent:
+				print("Volume lower the 0% isn't supported. Forced using 0%.")
+
+			percent = 0
+
+		if percent > 100 and not self.extra_volume:
+			if not self.silent:
+				self.__output("Extra volume disabled, please enable it to set volume under 100%")
+
+			percent = 100
+
+		self.volume = percent / 100
+
+	def volume_get(self) -> float:
+		return self.volume * 100
+
+	def seek_second(self, second: float) -> None:
+		if second < 0:
+			second %= self.seconds
+
+		self.second = min(second, self.seconds)
+
+	def get_cur_second(self) -> float:
+		return self.second
+
+	async def key_handler(self) -> None:
+		loop = asyncio.get_running_loop()
+
+		while not self.playback_ended.is_set():
+			#get_input_byte_task = asyncio.create_task(utils.get_input_byte(loop))
+
+			#tasks = [
+			#	get_input_byte_task,
+			#	asyncio.create_task(self.playback_ended.wait())
+			#]
+			
+			#done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+			#for task in pending:
+			#	task.cancel()
+
+			#	try:
+			#		await task
+			#	except asyncio.CancelledError:
+			#		pass
+			
+			#input_key = ""
+
+			#if get_input_byte_task in done:
+			#	try:
+			#		input_key = get_input_byte_task.result()
+			#	except asyncio.InvalidStateError:
+			#		continue
+
+			input_key = await utils.get_input_byte(loop)
+
+			handled = False
+
+			if input_key == "\x1B":
+				try:
+					next_byte = await asyncio.wait_for(utils.get_input_byte(loop), 0.3)
+
+					if next_byte == "[":
+						next_byte = await asyncio.wait_for(utils.get_input_byte(loop), 0.3)
+
+						input_arrows = "↑↓→←"
+
+						input_key = input_arrows[ord(next_byte) - ord('A')]
+				except asyncio.exceptions.TimeoutError:
+					pass
+
+			seek_seconds = 1
+
+			if input_key == "q":
+				await self.close()
+
+			elif input_key == " ":
+				if self.is_playing.is_set():
+					self.stream.stop()
+
+					self.pause()
+				else:
+					self.stream.start()
+
+					self.play()
+				
+				handled = True
+
+			elif input_key == "s":
+				if self.seek.is_set():
+					self.seek.clear()
+				else:
+					self.seek.set()
+				
+				handled = True
+
+			elif input_key == "↑":
+				self.volume_up(1)
+				
+				handled = True
+
+			elif input_key == "↓":
+				self.volume_down(1)
+				
+				handled = True
+			
+			elif input_key == "←":
+				self.seek_second(self.second - seek_seconds)
+				
+				handled = True
+			
+			elif input_key == "→":
+				self.seek_second(self.second + seek_seconds)
+				
+				handled = True
+			
+			if handled:
+				await self.update_display.invoke()
+	
+	async def timer(self, dur: float=1.0) -> None:
+		while not self.playback_ended.is_set():
+			await self.is_playing.wait()
+
+			await self.update_display.invoke()
+
+			await asyncio.sleep(dur)
+	
+	async def loop(self) -> None:
+		await asyncio.gather(
+			self.play_loop(),
+			self.key_handler(),
+			self.timer(1)
+		)
+	
+	async def reset(self) -> None:
+		self.__output("AudioPlayer reseting...")
 
 		self.second = 0
 
@@ -308,99 +488,41 @@ class AudioPlayer:
 
 		self.seek.clear()
 
+		self.update_display.subscribe(self.display_update)
+
 		if not self.stream:
-			self.reopen_stream()
+			await self.open_stream()
 	
 	async def close(self) -> None:
-		print("AudioPlayer cleaning...")
-
 		self.playback_ended.set()
-
-		self.is_playing.clear()
 
 		self.seek.clear()
 
+		self.is_playing.clear()
+
+		if self.closed.is_set():
+			return
+
 		await self.ready_to_quit.wait()
 
-		self.stream.stop_stream()
+		if self.stream:
+			self.__output("AudioPlayer cleaning... ")
 
-		self.stream.close()
+			await self.stream.close()
 
-		self.stream = None
-		
-		self.audio.terminate()
+			self.stream = None
 
-		self.audio = None
+			self.__output("AudioPlayer cleaning done.")
+
+		self.closed.set()
 	
-	async def loop(self) -> None:
-		await asyncio.gather(self.play_audio(), self.key_handler())
+	async def __aenter__(self):
+		await self.open()
 
-	async def key_handler(self) -> None:
-		loop = asyncio.get_running_loop()
-
-		while not self.playback_ended.is_set():
-			key = await loop.run_in_executor(None, sys.stdin.read, 1)
-
-			if key == " ":
-				if self.is_playing.is_set():
-					self.is_playing.clear()
-				else:
-					self.is_playing.set()
-
-			elif key == "s":
-				if self.seek.is_set():
-					self.seek.clear()
-				else:
-					self.seek.set()
-
-			elif key == "q":
-				await self.close()
+		return self
+	
+	async def __aexit__(self, exc_type, exc, tb):
+		await self.close()
 
 	def __del__(self):
 		pass
-
-async def main():
-	choicer = FileChooser(gui=True, multiple=True)
-
-	files = await choicer.loop(filters=AudioPlayer.supported_extensions)
-
-	if not files:
-		print("No any file choiced")
-
-	else:
-		id3 = id3tag.id3tag()
-
-		player = AudioPlayer()
-	
-		for file in files:
-			print(f"Choiced file: {cyan}\"{file.name}\"{default}")
-
-			playable = file.suffix.lower() in AudioPlayer.supported_extensions
-
-			if not playable:
-				print(f"File {cyan}\"{file.name}\"{default} with extension {cyan}\"{file.suffix.lower()}\"{default} unsupported")
-				
-				supported_extensions_str = f"\"{default}, {cyan}\"".join(player.supported_extensions)
-
-				supported_extensions_str = f"{cyan}\"{supported_extensions_str}\"{default}"
-
-				print(f"Supported extensions: {supported_extensions_str}")
-			
-			elif file:
-				player.file = file
-
-				player.reset()
-
-				await player.loop()
-			
-			print()
-	
-		await player.close()
-
-if __name__ == "__main__":
-	default_settings = switch_to_raw()
-
-	try:
-		asyncio.run(main())
-	finally:
-		switch_to_default(default_settings)

@@ -4,110 +4,180 @@ from pathlib import Path
 
 import ansi
 
-import utils
-
 from plyer import filechooser
-
-from os import get_terminal_size
 
 from menu import Menu
 
+from time import time
+
 class FileChooser:
-	def __init__(self, title: str="Choice a file", multiple: bool=False, gui: bool=True):
+	def __init__(self, title: str="Choice a file", dir: Path=Path().home(), multiple: bool=False, gui: bool=True):
+		self.title = title
+
 		self.gui = gui
+
+		self.multiple = multiple
 
 		self.finished = asyncio.Event()
 
-		self.dir = Path("/mnt/")
+		self.dir = dir
 
-		self.objs = []
+		self.selected_files = []
 
-		self.menu = Menu(title=title, multiple=multiple)
+		self.find_buf = ""
 
-		self.menu.input.subscribe(self.input_handler)
+		self.find = asyncio.Event()
 
-	async def input_handler(self, *args, **kwargs) -> None:
-		option = args[1]
+		if not gui:
+			self.objs = []
 
-		input_key: str = args[2]
+			self.info = """arrows ↑↓ -- navigate
+f -- find objects by name (including files, folders and symlinks, double esc to exit)
+backspace -- go previous location
+q -- quit menu"""
 
-		if input_key == "q":
-			self.menu.finished.set()
+			self.menu = Menu(title=self.title, info=self.info, multiple=self.multiple)
 
-			self.finished.set()
+			self.menu.on_update_subcribe(self.menu.menu_cli_frame)
 
-		elif input_key == "↑":
-			self.menu.sel_option = max(self.menu.sel_option - 1, 0)
-		elif input_key == "↓":
-			self.menu.sel_option = max(min(self.menu.sel_option + 1, self.menu.option_cnt - 1), 0)
+			self.menu.default_input.subscribe(self.menu.menu_default_input_handler)
 
-		elif input_key in "\r\n":
-			if option >= self.menu.option_cnt:
-				print("Attempt to select option outside of the list.")
+			self.menu.input.subscribe(self.input_handler)
 
-				return
-
-			obj = Path(self.objs[option])
-
-			print(f"obj: {obj}")
+	async def input_handler(self, event_name: str, menu: Menu, option: int, input_key: str) -> None:
+		if input_key in "\r\n" and len(self.objs) > option:
+			view_options = [obj for obj in self.objs if not self.find.is_set() or self.find_buf.lower() in obj.name.lower()]
+			
+			obj: Path = view_options[option]
 
 			if obj.is_file():
-				if option not in self.menu.selected_options:
-					self.menu.selected_options.append(option)
+				if obj not in self.selected_files:
+					self.selected_files.append(obj)
 				else:
-					self.menu.selected_options.remove(option)
-			elif obj.is_dir():
-				self.dir = obj
-			elif obj.is_symlink():
+					self.selected_files.remove(obj)
+				
+				await self.menu.menu_select(option)
+
+				if not self.multiple:
+					self.menu.close()
+
+					self.finished.set()
+
+			elif obj.is_dir() or obj.is_symlink():
 				self.dir = obj.resolve()
 			
-			self.menu.finished.set()
-		elif input_key in "\x08\x7F":
-			self.dir = self.dir.parent
+				self.menu.close()
 
-		self.menu.update.set()
+		elif input_key in "\x08\x7F":
+			if not self.find.is_set():
+				old_dir = self.dir
+
+				self.dir = self.dir.parent
+
+				if old_dir != self.dir:
+					self.menu.close()
+			else:
+				self.find_buf = self.find_buf[:(len(self.find_buf) - 1)]
+
+				self.menu.set_find(self.find_buf)
+
+		elif self.find.is_set():
+			if input_key == "\x1B":
+				self.menu.stop_find()
+
+				self.find.clear()
+			else:
+				self.find_buf += input_key
+
+				self.menu.set_find(self.find_buf)
+
+		elif input_key == "q":
+			self.finished.set()
+
+		elif input_key == "f":
+			self.menu.set_find()
+
+			self.find.set()
+	
+	async def choice_file_gui(self, filters: list[str] | None=None) -> list[Path | None] | None:
+		try:
+			return map(Path, filechooser.open_file(filers=filters, multiple=self.multiple, title=self.title))
+		except TypeError:
+			return None
+	
+	async def choice_file_cli(self, filters: list[str] | None=None) -> list[Path | None] | None:
+		while not self.finished.is_set():
+			objs = []
+			
+			retry = True
+
+			self.menu.title = f"{self.title}: {self.dir}"
+
+			while retry:
+				try:
+					objs = list(self.dir.iterdir())
+				except FileNotFoundError:
+					continue
+
+				retry = False
+
+			folders = []
+
+			files = []
+
+			for obj in objs:
+				if obj.name.startswith("."):
+					continue
+
+				if obj.is_dir() or obj.is_symlink():
+					folders.append(str(obj))
+				elif obj.is_file() and not filters or obj.suffix.lower() in filters:
+					files.append(str(obj))
+				
+			folders = sorted(folders)
+				
+			files = sorted(files)
+
+			menu_list = []
+
+			self.objs.clear()
+
+			for folder in folders:
+				folder = Path(folder)
+
+				self.objs.append(folder)
+
+				menu_list.append(f"{ansi.lime_fg}{folder.name}/")
+				
+			for file in files:
+				file = Path(file)
+
+				self.objs.append(file)
+
+				menu_list.append(file.name)
+
+			await self.menu.reset()
+
+			self.menu.full_options = self.objs
+
+			self.menu.options = menu_list
+
+			self.menu.option_cnt = len(menu_list)
+
+			extension_string = "\", \"".join(filters) if filters else "All"
+
+			self.menu.info = f"{self.info}\nSupported extensions: \"{extension_string}\""
+
+			await self.menu.update()
+
+			await self.menu.loop(filters=filters)
+
+			print(ansi.clear_screen, end='')
+
+		return self.selected_files
 
 	async def choice_file(self, filters: list[str] | None=None) -> list[Path | None] | None:
-		result = None
-
 		if self.gui:
-			try:
-				result = map(Path, filechooser.open_file(filers=filters, multiple=self.multiple, title=self.title))
-			except TypeError:
-				return None
+			return await self.choice_file_gui(filters=filters)
 		else:
-			while not self.finished.is_set():
-				objs = list(self.dir.iterdir())
-
-				folders = [obj for obj in objs if obj.is_dir()]
-
-				files = [obj for obj in objs if obj.is_file()]
-
-				menu_list = []
-
-				self.objs.clear()
-
-				for folder in folders:
-					self.objs.append(folder)
-
-					menu_list.append(f"{ansi.lime_fg}{folder}/{ansi.default_fg}")
-				
-				for file in files:
-					self.objs.append(file)
-
-					menu_list.append(f"{ansi.default_fg}{file}")
-
-				self.menu.reset()
-
-				self.menu.options = list(map(str, self.objs))
-
-				self.menu.option_cnt = len(menu_list)
-
-				self.menu.update.set()
-
-				await self.menu.loop(filters)
-
-		return result
-
-	async def loop(self, filters: list[Path | str] | None=None) -> list[Path | None] | None:
-		return await self.choice_file(filters)
+			return await self.choice_file_cli(filters=filters)

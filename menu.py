@@ -1,73 +1,114 @@
 import asyncio
 
-import sys
-
-from utils import *
+import utils
 
 import ansi
 
-import numpy as np
+from time import time
+
+from types import FunctionType
 
 class Menu:
-	def __init__(self, options: list[str]=[], title: str="Menu", multiple: bool=False) -> None:
+	def __init__(self, full_options: list[str]=None, options: list[str]=[], title: str="Menu", info: str="""arrows ↑↓→← -- navigate
+f -- find objects by name (double esc to exit)
+backspace -- go previous location
+enter -- select
+q -- quit menu""", multiple: bool=False) -> None:
 		self.options = options
+
+		if not full_options:
+			full_options = options
+
+		self.full_options = full_options
+
+		self.view_options = options
 
 		self.option_cnt = len(options)
 
 		self.title = title
+
+		self.info = info
 		
 		self.multiple = multiple
 
-		self.input = EventEmitter("input", max_handlers=1)
+		self.input = utils.EventEmitter("input", max_handlers=1)
 
-		self.update = asyncio.Event()
+		self.default_input = utils.EventEmitter("default_input", max_handlers=1)
+
+		self.__menu_update = utils.EventEmitter("menu_update")
 
 		self.finished = asyncio.Event()
 
-		self.sel_option = 0
+		self.find_buf = ""
+
+		self.state_string = ""
+
+		self.find = asyncio.Event()
+
+		self.selected_option = 0
 
 		self.old_sel_item = 0
 
-		self.selected_options: list[bool] = []
+		self.options_display_start = 0
+
+		self.selected_options: list[str] = []
+
+		self.filters: list[str] | None = []
+
+		self.__lines_outputed = 0
+
+		#self.console = utils.VirtualConsole()
 	
-	async def default_input_handler(self, *args, **kwargs) -> None:
+	def __output(self, *values: object, sep: str=" ", end: str="\n") -> None:
+		string = f"{sep.join(map(str, values))}{end}"
+
+		self.__lines_outputed += len(string.splitlines())
+
+		string = string.replace("\n", "\n\r").expandtabs(4)
+
+		print(string, end='', flush=True)
+	
+	def __output_update(self) -> None:
+		columns, rows = utils.get_terminal_size()
+
+		for _ in range(self.__lines_outputed, rows):
+			utils.print("\r".ljust(columns))
+
+		self.__lines_outputed = 0
+
+		utils.set_cursor_pos(0, 0)
+	
+	async def menu_default_input_handler(self, *args, **kwargs) -> None:
 		option = args[1]
 
 		input_key: str = args[2]
-
-		if option >= self.option_cnt:
-			print("Attempt to select option outside of the list.")
-
-			return
-
-		if input_key == "q":
-			self.finished.set()
-
-		elif input_key == "↑":
-			self.sel_option = max(self.sel_option - 1, 0)
+		
+		if input_key == "↑":
+			self.selected_option -= 1
 		elif input_key == "↓":
-			self.sel_option = min(self.sel_option + 1, self.option_cnt - 1)
+			self.selected_option += 1
+		else:
+			await self.input.invoke(self, option, input_key)
+		
+		view_options_cnt = len(self.view_options)
 
-		elif input_key in "\r\n":
-			if option not in self.selected_options:
-				self.selected_options.append(option)
-			else:
-				self.selected_options.remove(option)
+		self.selected_option = 0 if view_options_cnt <= 0 else self.selected_option % view_options_cnt
 
-		self.update.set()
+		if input_key == "q" and not self.find.is_set():
+			self.finished.set()
 	
 	async def menu_key_handler(self) -> None:
 		loop = asyncio.get_running_loop()
 
 		while not self.finished.is_set():
-			input_key = await get_input_byte(loop)
+			input_key = await utils.get_input_byte(loop)
 
 			if input_key == "\x1B":
 				try:
-					next_byte = await asyncio.wait_for(get_input_byte(loop), 0.3)
+					next_byte = await asyncio.wait_for(utils.get_input_byte(loop), 0.3)
 
 					if next_byte == "[":
-						next_byte = await asyncio.wait_for(get_input_byte(loop), 0.3)
+						next_byte = await asyncio.wait_for(utils.get_input_byte(loop), 0.3)
 
 						input_arrows = "↑↓→←"
 
@@ -75,64 +116,158 @@ class Menu:
 				except asyncio.exceptions.TimeoutError:
 					pass
 
-			await self.input.invoke(self.sel_option, input_key)
+			await self.default_input.invoke(self.selected_option, input_key)
+				
+			await self.update()
 	
-	async def menu_cli(self, filters: list[str]) -> list[str | None]:
-		self.old_sel_item = self.sel_option
+	async def menu_select(self, option: int) -> None:
+		self.view_options = [option for option in self.full_options if not self.find.is_set() or self.find_buf.lower() in str(option).lower()]
+			
+		option_name = self.view_options[option]
 
-		while not self.finished.is_set():
-			set_cursor_pos(0, 0)
+		if option_name not in self.selected_options:
+			self.selected_options.append(option_name)
+		else:
+			self.selected_options.remove(option_name)
+	
+	async def menu_cli_frame(self, event_name: str, filters: list[str]) -> None:
+		columns, rows = utils.get_terminal_size()
 
-			columns, rows = get_terminal_size()
+		dur = time()
+			
+		self.view_options = [i for i, option in enumerate(self.options) if not self.find.is_set() or self.find_buf.lower() in option.lower()]
+			
+		view_options_cnt = len(self.view_options)
 
-			print(self.title.center(columns))
+		self.selected_option = 0 if view_options_cnt <= 0 else self.selected_option % view_options_cnt
 
-			options_display_cnt = min(self.option_cnt, rows - 3 - 1 - 1)
+		options_string = '\", \"'.join(str(option) for option in self.selected_options)
+		selected_mess = f"{len(self.selected_options)} selected: "
+		selected_string = utils.text_scroller(f"\"{options_string}\"", columns - len(selected_mess) - 1, dur)
 
-			options_display_start = 0
+		self.state_string = utils.ljust(f"selected item: {self.selected_option + 1}/{len(self.view_options)}", columns)
 
-			if self.sel_option >= options_display_cnt:
-				options_display_start = self.sel_option - options_display_cnt + 1
+		self.state_string += "\n"
 
-			for i in range(options_display_start, options_display_start + options_display_cnt):
-				selected = self.sel_option == i
+		self.state_string += utils.ljust(f"{selected_mess}{selected_string}", columns)
 
-				color = ansi.default_fg
+		if self.find.is_set():
+			mess = "Type: "
 
-				selected_color = ansi.black_fg
+			mess_len = len(mess)
 
-				option = self.options[i]
+			inputed = utils.ljust(utils.text_scroller(self.find_buf, columns - mess_len, dur), columns - mess_len)
 
-				if selected:
-					print(f"{ansi.white_bg}{selected_color}{option.ljust(columns)}{ansi.default}")
-				else:
-					print(f"{color}{ansi.default_bg}{option.ljust(columns)}{ansi.default}")
+			self.state_string += "\n"
+
+			self.state_string += utils.ljust(f"{mess}{inputed}", columns)
+
+		head = 2 + len(self.title.splitlines())
+
+		tail = 1 + len(self.info.splitlines()) + len(self.state_string.splitlines())
+
+		options_display_cnt = min(view_options_cnt, rows - head - tail)
+
+		options_display_end = self.options_display_start + options_display_cnt
+
+		if self.selected_option >= options_display_end:
+			self.options_display_start = self.selected_option - options_display_cnt + 1
+
+		elif self.selected_option < self.options_display_start:
+			self.options_display_start = self.selected_option
+
+		option_width = columns - 3 - (3 if self.multiple else 0)
+
+		self.__output(utils.center(utils.text_scroller(self.title, columns, time=dur), columns))
 				
-			print(f"selected item: {self.sel_option}".ljust(columns))
+		screen_width = columns - 2
 
-			options_string = '\", \"'.join([self.options[option] for option in self.selected_options])
+		self.__output(f"┌{'─' * screen_width}┐")
+
+		for i in range(options_display_cnt):
+			i += self.options_display_start
+
+			if i >= view_options_cnt:
+				break
+
+			option_index = self.view_options[i]
 				
-			print(f"selected: \"{options_string}\"".ljust(columns))
+			full_option = self.full_options[option_index]
 
-			await self.update.wait()
+			selected_marker = ""
 
-			self.update.clear()
+			if self.multiple:
+				selected_marker = "[X]" if full_option in self.selected_options else "[ ]"
+				
+			option = self.options[option_index]
+
+			if self.selected_option == i:
+				option = utils.text_scroller(option, option_width, dur)
+			else:
+				option = option[:option_width]
+
+			option = utils.ljust(option, option_width)
+
+			if self.selected_option == i:
+				self.__output(f"│{selected_marker} {ansi.inverse}{option}{ansi.default}│")
+			else:
+				self.__output(f"│{selected_marker} {ansi.default_fg}{ansi.default_bg}{option}{ansi.default}│")
+
+		self.__output(f"└{'─' * screen_width}┘")
+
+		self.__output(self.state_string)
+
+		info_lines = self.info.splitlines()
+
+		for line in info_lines:
+			self.__output(utils.center(utils.text_scroller(line, columns, dur), columns), end='')
 		
-		return self.selected_options
+		self.__output()
+
+		self.__output_update()
+	
+	async def timer(self) -> None:
+		while not self.finished.is_set():
+			await asyncio.sleep(0.1)
+
+			await self.update()
 	
 	async def menu_gui(self) -> list[str | None]:
 		raise NotImplementedError()
 		
 		return self.selected_options
 
-	def reset(self) -> None:
+	async def loop(self, filters: list[str] | None=None) -> list[str]:
+		self.filters = filters
+
+		await asyncio.gather(self.timer(), self.menu_key_handler())
+
+		return self.selected_options
+
+	def set_find(self, find: str="") -> None:
+		self.find_buf = find
+
+		self.find.set()
+
+	def stop_find(self) -> None:
+		self.find_buf = ""
+
+		self.find.clear()
+
+	async def reset(self) -> None:
 		self.finished.clear()
-		self.update.clear()
-		self.selected_options.clear()
-		self.sel_option = 0
+		self.selected_option = 0
 		self.options.clear()
 		self.option_cnt = 0
 
-	async def loop(self, filters: list[str] | None=None) -> list[str | None]:
-		return (await asyncio.gather(self.menu_cli(filters), self.menu_key_handler()))[0]
-	
+	def on_update_subcribe(self, update_handler: FunctionType) -> None:
+		self.__menu_update.subscribe(update_handler)
+
+	def on_update_unsubcribe(self, update_handler: FunctionType) -> None:
+		self.__menu_update.unsubscribe(update_handler)
+
+	async def update(self) -> None:
+		await self.__menu_update.invoke(self.filters)
+
+	def close(self) -> None:
+		self.finished.set()
