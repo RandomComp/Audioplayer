@@ -2,17 +2,19 @@ import numpy as np
 
 import asyncio
 
-from pyaudio import PyAudio
-
-from pyaudio import paFloat32, paInt32, paInt24, paInt16, paInt8, paUInt8
+from pyaudio import PyAudio, paFloat32, paInt32, paInt24, paInt16, paInt8, paUInt8
 
 from utils import print
 
+from translator import Translator
+
 class AudioStream:
-	def __init__(self, sample_rate: int=44100, channels: int=2, dtype=paFloat32, input: bool=False, chunked: bool=True, chunk_seconds: float=0.5) -> None:
+	def __init__(self, sample_rate: int=44100, channels: int=2, dtype=paFloat32, input: bool=False, chunked: bool=True, chunk_seconds: float=0.5, translator: Translator=None) -> None:
 		self.port = None
 
 		self.stream = None
+
+		self.translator = translator
 
 		self.sample_rate = sample_rate
 
@@ -37,6 +39,23 @@ class AudioStream:
 		self.is_playing.set()
 
 		self.write_proc = None
+	
+	def __translated_output(self, *values: object, sep: str=" ", end: str="\n") -> None:
+		print(self.__translated(*values, sep=sep), end=end)
+	
+	def __translated(self, *values: object, sep: str=" ") -> None:
+		values_str = []
+
+		for value in values:
+			value_str = str(value)
+
+			if isinstance(value, str):
+				if self.translator:
+					value_str = self.translator.translate(value_str)
+
+			values_str.append(value_str)
+		
+		return sep.join(values_str)
 
 	def open(self) -> None:
 		if self.port == None:
@@ -60,7 +79,7 @@ class AudioStream:
 		frames_len = len(frames)
 
 		if frames_len == 0 or frames_size <= 0 or self.finished.is_set():
-			print(frames_size, self.finished.is_set())
+			#print(frames_size, self.finished.is_set())
 
 			return
 
@@ -74,7 +93,7 @@ class AudioStream:
 	
 	async def write_chunk(self, frames: np.ndarray, bytes_per_frame: int=4) -> None:
 		if not self.stream:
-			raise IOError("Stream is invalid.")
+			raise IOError(self.__translated("Stream is invalid."))
 		
 		frames_len = len(frames)
 
@@ -109,9 +128,11 @@ class AudioStream:
 
 	async def write(self, frames: np.ndarray, frames_size: int=-1, bytes_per_frame: int=4) -> None:
 		if not self.stream:
-			raise IOError("Stream is invalid.")
+			raise IOError(self.__translated("Stream is invalid."))
 		
 		await self.is_playing.wait()
+
+		frames = np.clip(frames, -1.0, 1.0)
 		
 		frames_len = len(frames)
 		
@@ -147,14 +168,14 @@ class AudioStream:
 			self.stream = None
 
 	async def close(self) -> None:
-		print("AudioStream cleaning...")
+		self.__translated_output("AudioStream cleaning...")
 
 		ready_to_quit_wait_task = asyncio.create_task(self.ready_to_finish.wait())
 
 		try:
 			await asyncio.wait_for(ready_to_quit_wait_task, timeout=5)
 		except asyncio.exceptions.TimeoutError:
-			print("Timeouted.")
+			self.__translated_output("Timeouted.")
 
 			ready_to_quit_wait_task.cancel()
 
@@ -171,7 +192,7 @@ class AudioStream:
 			
 			self.finished.set()
 		
-		print("AudioStream cleaning done.")
+		self.__translated_output("AudioStream cleaning done.")
 
 	async def __aenter__(self):
 		await self.start()

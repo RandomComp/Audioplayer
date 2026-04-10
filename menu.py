@@ -1,19 +1,23 @@
 import asyncio
 
+from time import time
+
+from types import FunctionType
+
 import utils
 
 import ansi
 
-from time import time
+import event
 
-from types import FunctionType
+from translator import Translator
 
 class Menu:
 	def __init__(self, full_options: list[str]=None, options: list[str]=[], title: str="Menu", info: str="""arrows ↑↓→← -- navigate
 f -- find objects by name (double esc to exit)
 backspace -- go previous location
 enter -- select
-q -- quit menu""", multiple: bool=False) -> None:
+q -- quit menu""", multiple: bool=False, translator: Translator=None) -> None:
 		self.options = options
 
 		if not full_options:
@@ -31,11 +35,11 @@ q -- quit menu""", multiple: bool=False) -> None:
 		
 		self.multiple = multiple
 
-		self.input = utils.EventEmitter("input", max_handlers=1)
+		self.input = event.EventEmitter("input", max_handlers=1)
 
-		self.default_input = utils.EventEmitter("default_input", max_handlers=1)
+		self.default_input = event.EventEmitter("default_input", max_handlers=1)
 
-		self.__menu_update = utils.EventEmitter("menu_update")
+		self.__menu_update = event.EventEmitter("menu_update")
 
 		self.finished = asyncio.Event()
 
@@ -56,6 +60,15 @@ q -- quit menu""", multiple: bool=False) -> None:
 		self.filters: list[str] | None = []
 
 		self.__lines_outputed = 0
+
+		self.__selected_str = "selected"
+
+		self.__selected_item_str = "selected item"
+
+		if translator:
+			self.__selected_str = translator.translate(self.__selected_str)
+
+			self.__selected_item_str = translator.translate(self.__selected_item_str)
 
 		#self.console = utils.VirtualConsole()
 	
@@ -142,10 +155,10 @@ q -- quit menu""", multiple: bool=False) -> None:
 		self.selected_option = 0 if view_options_cnt <= 0 else self.selected_option % view_options_cnt
 
 		options_string = '\", \"'.join(str(option) for option in self.selected_options)
-		selected_mess = f"{len(self.selected_options)} selected: "
+		selected_mess = f"{len(self.selected_options)} {self.__selected_str}: "
 		selected_string = utils.text_scroller(f"\"{options_string}\"", columns - len(selected_mess) - 1, dur)
 
-		self.state_string = utils.ljust(f"selected item: {self.selected_option + 1}/{len(self.view_options)}", columns)
+		self.state_string = utils.ljust(f"{self.__selected_item_str}: {self.selected_option + 1}/{len(self.view_options)}", columns)
 
 		self.state_string += "\n"
 

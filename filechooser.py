@@ -2,25 +2,30 @@ import asyncio
 
 from pathlib import Path
 
-import ansi
-
 from plyer import filechooser
+
+import ansi
 
 from menu import Menu
 
-from time import time
+from translator import Translator
 
 class FileChooser:
-	def __init__(self, title: str="Choice a file", dir: Path=Path().home(), multiple: bool=False, gui: bool=True):
+	def __init__(self, title: str="Choice a file", dir: Path=Path().home(), multiple: bool=False, gui: bool=True, translator: Translator=None):
 		self.title = title
+
+		if translator:
+			self.title = translator.translate(self.title)
 
 		self.gui = gui
 
 		self.multiple = multiple
 
-		self.finished = asyncio.Event()
+		self.translator = translator
 
 		self.dir = dir
+
+		self.finished = asyncio.Event()
 
 		self.selected_files = []
 
@@ -32,11 +37,19 @@ class FileChooser:
 			self.objs = []
 
 			self.info = """arrows ↑↓ -- navigate
+enter -- select
 f -- find objects by name (including files, folders and symlinks, double esc to exit)
 backspace -- go previous location
 q -- quit menu"""
 
-			self.menu = Menu(title=self.title, info=self.info, multiple=self.multiple)
+			self.__supported_extension_str = "Supported extensions"
+
+			if translator:
+				self.info = translator.translate(self.info)
+
+				self.__supported_extension_str = self.translator.translate(self.__supported_extension_str)
+
+			self.menu = Menu(title=self.title, info=self.info, multiple=self.multiple, translator=translator)
 
 			self.menu.on_update_subcribe(self.menu.menu_cli_frame)
 
@@ -104,6 +117,8 @@ q -- quit menu"""
 			return map(Path, filechooser.open_file(filers=filters, multiple=self.multiple, title=self.title))
 		except TypeError:
 			return None
+		
+		# TODO: Написать свою альтернативу plyer.filechooser используя zenity и GetOpenFileName
 	
 	async def choice_file_cli(self, filters: list[str] | None=None) -> list[Path | None] | None:
 		while not self.finished.is_set():
@@ -131,7 +146,7 @@ q -- quit menu"""
 
 				if obj.is_dir() or obj.is_symlink():
 					folders.append(str(obj))
-				elif obj.is_file() and not filters or obj.suffix.lower() in filters:
+				elif obj.is_file() and (not filters or obj.suffix.lower() in filters):
 					files.append(str(obj))
 				
 			folders = sorted(folders)
@@ -166,18 +181,22 @@ q -- quit menu"""
 
 			extension_string = "\", \"".join(filters) if filters else "All"
 
-			self.menu.info = f"{self.info}\nSupported extensions: \"{extension_string}\""
+			self.menu.info = f"{self.info}\n{self.__supported_extension_str}: \"{extension_string}\""
 
 			await self.menu.update()
 
 			await self.menu.loop(filters=filters)
 
-			print(ansi.clear_screen, end='')
-
 		return self.selected_files
 
 	async def choice_file(self, filters: list[str] | None=None) -> list[Path | None] | None:
+		result = []
+
 		if self.gui:
-			return await self.choice_file_gui(filters=filters)
+			result = await self.choice_file_gui(filters=filters)
 		else:
-			return await self.choice_file_cli(filters=filters)
+			result = await self.choice_file_cli(filters=filters)
+		
+		print(ansi.clear_screen)
+		
+		return result if self.multiple else result[0] if result else None

@@ -7,7 +7,7 @@ This is my audio player written from scratch in Python using PyAudio and pydub l
 **Install the apt requirements:**
 ><br/><code>sudo apt update</code>
 
-><code>sudo apt install python3-dev portaudio19-dev</code>
+><code>sudo apt intall python3-dev portaudio19-dev</code>
 
 **Install the pip requirements to OS environment:**
 

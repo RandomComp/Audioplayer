@@ -2,6 +2,8 @@ from filechooser import FileChooser
 
 from audioplayer import AudioPlayer
 
+from translator import Translator
+
 import ansi
 
 import asyncio
@@ -13,16 +15,32 @@ import utils
 from pathlib import Path
 
 #from mp3tag import id3tag
+	
+def __translated_output(*values: object, translator: Translator=None, sep: str=" ", end: str="\n") -> None:
+	values_str = []
+
+	for value in values:
+		value_str = str(value)
+
+		if isinstance(value, str):
+			if translator:
+				value_str = translator.translate(value_str)
+
+		values_str.append(value_str)
+
+	utils.print(sep.join(values_str), end=end)
 
 async def main():
-	choicer = FileChooser(dir=Path().home(), gui=False, multiple=True)
+	translator = Translator("localization.json")
+
+	choicer = FileChooser(dir=Path().home(), gui=False, multiple=True, translator=translator)
 
 	files = await choicer.choice_file(filters=AudioPlayer.supported_extensions)
 
 	# files = [Path("/mnt/SSD/Downloads/Песни/Любимые песни/Queen_-_Bohemian_Rhapsody_Remastered_2011_75941904.mp3")]
 
 	if not files:
-		print("No any file choiced")
+		__translated_output("No any file choiced", translator=translator)
 
 		return
 
@@ -30,21 +48,21 @@ async def main():
 
 	#id3 = id3tag.id3tag()
 
-	player = AudioPlayer(mock=False)
+	player = AudioPlayer(mock=False, translator=translator)
 			
 	await player.open()
 
 	for file in files:
-		utils.print(f"Choiced file: {ansi.cyan}\"{file.name}\"{ansi.default}")
+		__translated_output(f"Choiced file: {ansi.cyan}\"{file.name}\"{ansi.default}", translator=translator)
 
 		if file.suffix.lower() not in AudioPlayer.supported_extensions:
-			utils.print(f"File {ansi.cyan}\"{file.name}\"{ansi.default} with extension {ansi.cyan}\"{file.suffix.lower()}\"{ansi.default} unsupported")
+			__translated_output(f"File {ansi.cyan}\"{file.name}\"{ansi.default} with extension {ansi.cyan}\"{file.suffix.lower()}\"{ansi.default} unsupported", translator=translator)
 			
 			supported_extensions_str = f"\"{ansi.default}, {ansi.cyan}\"".join(AudioPlayer.supported_extensions)
 
 			supported_extensions_str = f"{ansi.cyan}\"{supported_extensions_str}\"{ansi.default}"
 
-			utils.print(f"Supported extensions: {supported_extensions_str}")
+			__translated_output(f"Supported extensions: {supported_extensions_str}", translator=translator)
 
 			return
 

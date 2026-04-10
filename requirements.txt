@@ -2,5 +2,3 @@ pyaudio
 numpy
 pydub
 plyer
-matplotlib
-

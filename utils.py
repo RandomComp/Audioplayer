@@ -1,22 +1,25 @@
 import sys
 
-from termios import tcsetattr, tcgetattr, TCSADRAIN
-
-from tty import setraw
-
 from os import get_terminal_size
-
-from types import FunctionType, CoroutineType
-
-from typing import Any, Generator
-
-import ansi
 
 import asyncio
 
 from enum import Enum
 
 import builtins
+
+from typing import Iterable
+
+from sys import platform
+
+import ansi
+
+if platform == "win32":
+	from msvcrt import getch
+else:
+	from termios import tcsetattr, tcgetattr, TCSADRAIN
+
+	from tty import setraw
 
 def ansi_len(ansi_str: str) -> int:
 	ch_len = builtins.len(ansi_str)
@@ -51,7 +54,10 @@ def ansi_len(ansi_str: str) -> int:
 
 	return result
 
-def len(text: str) -> int:
+def len(text: Iterable) -> int:
+	if not isinstance(text, str):
+		return builtins.len(text)
+
 	return builtins.len(text) - ansi_len(text)
 
 def text_start(text: str) -> int | tuple[int]:
@@ -87,11 +93,6 @@ def text_scroller(text: str, max_length: int, time: float, speed: float=10) -> s
 
 	return result
 
-async def get_input_byte(loop: asyncio.AbstractEventLoop, bytes: int=1):
-	return await loop.run_in_executor(None, sys.stdin.read, bytes)
-
-python_print = print
-
 class PrintPadding(Enum):
 	none = 		0
 	up = 		1
@@ -102,18 +103,130 @@ class PrintPadding(Enum):
 	center_y = 	3
 	center = 	15
 
+from typing import Generator
+
+class ListGenerator:
+	def __init__(self, gen: Iterable):
+		self.gen = gen
+
+		self.results = []
+
+		self.index = 0
+
+		is_iterable = True
+
+		try:
+			self.next()
+		except TypeError:
+			is_iterable = False
+		except StopIteration:
+			pass
+
+		if not is_iterable:
+			raise TypeError(f"Cannot initialize ListGenerator using non-iterable type {gen}")
+	
+	def next(self):
+		result = next(self.gen)
+
+		self.results.append(result)
+
+		return result
+
+	def __next__(self):
+		out_of_range = False
+
+		try:
+			result = self[self.index]
+		except IndexError:
+			out_of_range = True
+		
+		if out_of_range:
+			raise StopIteration()
+
+		self.index += 1
+
+		return result
+
+	def __iter__(self):
+		self.index = 0
+
+		return self
+
+	def __getitem__(self, key: None | int | slice):
+		if key == None or not isinstance(key, (int, slice)):
+			raise TypeError(f"Cannot get item from {self.__repr__()} using with unsupported type object {key}")
+
+		end = key
+
+		is_slice = isinstance(key, slice)
+		
+		if is_slice:
+			end = key.stop if not key.step or key.step > 0 else key.start
+		
+		out_of_range = False
+
+		while not end or end >= len(self.results):
+			try:
+				self.next()
+			except StopIteration:
+				if end:
+					out_of_range = True
+
+				break
+
+		if out_of_range:
+			raise IndexError("ListGenerator index out of range")
+
+		return self.results[key] if not is_slice else \
+				self.results[key.start:key.stop:key.step]
+	
+	def __contains__(self, item):
+		result = item in self.results
+
+		while not result:
+			try:
+				cur_item = self.next()
+
+				result = cur_item == item
+			except StopIteration:
+				break
+			
+		return result
+
+	def __len__(self):
+		while True:
+			try:
+				self.next()
+			except StopIteration:
+				break
+		
+		return len(self.results)
+
+	def __str__(self):
+		return self.__repr__()
+	
+	def __repr__(self):
+		return f"ListGenerator(results={self.results}, gen={str(self.gen)})"
+	
+def split(text: str, sep: str | list[str]=" ") -> list[str]:
+	sep_list = sep if isinstance(sep, list) else [sep] if sep else None
+
+	sep_list = ListGenerator(map(str, sep_list))
+
+	print(sep_list)
+
 def print(*values: object, sep: str=" ", end: str="\n", padding_val: int=0, padding: PrintPadding=PrintPadding.none) -> None:
 	string = f"{sep.join(map(str, values))}{end}".replace("\n", "\n\r").expandtabs(4)
 
-	#up = padding 
+	#up = padding
 
 	#if padding & PrintPadding.center_x
 
-	python_print(string, end='', flush=True)
+	sys.stdout.write(string)
+
+	sys.stdout.flush()
 
 def clear_screen() -> None:
-	ansi.set_cursor_pos(0, 0)
-
 	columns, rows = get_terminal_size()
 
 	print(" " * columns * rows, end='')
@@ -199,10 +312,16 @@ def center(block: str, length: int, fill_char: str=" ") -> str:
 	
 	return result
 
+async def get_input_byte(loop: asyncio.AbstractEventLoop, bytes: int=1):
+	if platform == "win32":
+		return await loop.run_in_executor(None, getch)
+	
+	return await loop.run_in_executor(None, sys.stdin.read, bytes)
+
 def set_cursor_pos(x: int, y: int):
 	sys.stdout.write(f"\x1B[{y};{x}H")
 
-# obsolete
+# unstable
 async def get_cursor_pos() -> tuple[int, int]:
 	sys.stdout.flush()
 
@@ -231,119 +350,12 @@ async def get_cursor_pos() -> tuple[int, int]:
 
 	return (int(column), int(row))
 
-class EventEmitter:
-	def __init__(self, name: str='', max_handlers: int = -1):
-		if max_handlers == 0:
-			raise RuntimeError("Maximum handlers cannot be 0.")
-
-		self.name = name
-
-		self.handlers: list[FunctionType] = []
-
-		self.max_handlers = max_handlers
-	
-	def subscribe(self, handler: FunctionType) -> None:
-		handler_cnt = builtins.len(self.handlers)
-		
-		if handler_cnt >= self.max_handlers and not self.max_handlers < 0:
-			print(f"Maximum handlers count exceeded ({handler_cnt} >= {self.max_handlers})")
-
-			return
-
-		if handler not in self.handlers:
-			self.handlers.append(handler)
-
-	def unsubscribe(self, handler: FunctionType=None) -> None:
-		handler_cnt = builtins.len(self.handlers)
-		
-		if handler == None or handler_cnt == 1:
-			if self.handlers: self.handlers.pop()
-
-		elif handler in self.handlers:
-			self.handlers.remove(handler)
-	
-	async def invoke(self, *args, **kwargs) -> list[Any]:
-		if not self.handlers:
-			raise RuntimeWarning(f"No any handler subscribed for event \"{self.name}\".")
-
-		corous_or_results: list[CoroutineType | Any] = \
-			(handler(self.name, *args, **kwargs) for handler in self.handlers)
-		
-		results = []
-
-		for cor_or_result in corous_or_results:
-			result = None
-
-			if isinstance(cor_or_result, CoroutineType):
-				result = await cor_or_result
-			else:
-				result = cor_or_result
-
-			results.append(result)
-
-		return results
-	
-class VirtualConsole:
-	def __init__(self, columns=-1, rows=-1):
-		self.column = self.row = 0
-
-		term_columns, term_rows = get_terminal_size()
-
-		self.columns = columns if columns > 0 else term_columns
-		
-		self.rows = rows if rows > 0 else term_rows
-
-		self.text_buf = ""
-	
-	def clear(self) -> None:
-		self.text_buf = ""
-
-		self.update()
-
-	def print(self, *values: object, sep: str=" ", end: str="\n") -> None:
-		string = f"{sep.join(map(str, values))}{end}".expandtabs(4)
-
-		self.text_buf += string
-
-		line_cnt = builtins.len(string.splitlines())
-		
-		self.column += builtins.len(string) - line_cnt
-
-		self.row += line_cnt
-
-	def get_cursor_pos(self) -> tuple[int, int]:
-		cursor = (self.row * self.columns) + self.column
-
-		self.column, self.row = (cursor % self.columns, cursor / self.columns)
-
-		return self.column, self.row
-	
-	def update(self) -> None:
-		columns, rows = self.columns, self.rows
-
-		term_columns, term_rows = get_terminal_size()
-
-		if columns == -1:
-			columns = term_columns
-		
-		if rows == -1:
-			rows = term_rows
-
-		temp = self.text_buf.replace("\n", " " * columns)
-
-		#string = '\", \"'.join(c for c in temp)
-
-		#print(f"\"{string}\"")
-
-		for i in range(rows):
-			st = columns * i
-
-			string = temp[st:(st + columns)]
-
-			if builtins.len(string) > 0:
-				python_print(f"{string}|")
-
 def switch_to_raw() -> list:
+	if platform == "win32":
+		print(f"Terminal mode switching default/raw is unsupported on your OS ({platform}).")
+
+		return
+	
 	fileno = sys.stdin.fileno()
 	
 	default_settings = tcgetattr(fileno)
@@ -353,6 +365,11 @@ def switch_to_raw() -> list:
 	return default_settings
 
 def switch_to_default(default_settings) -> None:
+	if platform == "win32":
+		print(f"Terminal mode switching default/raw is unsupported on your OS ({platform}).")
+
+		return
+	
 	fileno = sys.stdin.fileno()
 
 	tcsetattr(fileno, TCSADRAIN, default_settings)
@@ -374,13 +391,52 @@ def format_time(time: int):
 
 	return result
 
-def get_system_name() -> str:
-	from platform import system
+def format_size(size: int, base: int=1024, 
+				unit_names: list[str]=["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB", "RB", "QB"]) -> str:
+	if base <= 1:
+		raise RuntimeError(f"Base ({base}) cannot be <= 1")
 
-	return system().lower()
+	index = 0
+
+	result = []
+	
+	while size > 1 and index < len(unit_names) - 1:
+		number = size % base
+
+		if number >= 1:
+			result.append(f"{number} {unit_names[index]}")
+
+		size //= base
+
+		index += 1
+
+	if size >= 1:
+		result.append(f"{size} {unit_names[index]}")
+
+	return ' '.join(result[::-1]) if result else f"0 {unit_names[0]}"
+
+def progress(progress: float, dest: float, max_width: int, c: str="━") -> None:
+	width = int((progress / dest if dest > 0 else 1) * max_width)
+
+	passed_progress = c * (width - 1)
+
+	remaining_progress = c * (max_width - width)
+					
+	return f"{ansi.default}{ansi.lime_fg}{passed_progress}{ansi.default}|{remaining_progress}"
+
+def time_progress(second: float, seconds: float, max_width: int, c: str="━") -> None:
+	seconds_str = format_time(seconds)
+
+	second_str = format_time(second)
+
+	width = max_width - 1 - len(seconds_str) * 2
+
+	bar = progress(second, seconds, width, c=c)
+					
+	return f"{second_str.ljust(len(seconds_str))}{bar} {seconds_str}"
 
 def is_input_bytes() -> bool:
-	if get_system_name() == "windows":
+	if platform == "win32":
 		from msvcrt import kbhit
 		
 		return kbhit()
