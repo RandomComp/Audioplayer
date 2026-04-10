@@ -60,25 +60,23 @@ async def main():
 	# selected = await menu.loop()
 
 	# print(f"Selected: {selected}")
-	start = time()
 
-	columns, _ = utils.get_terminal_size()
+	chooser = FileChooser(gui=False)
 
-	while True:
-		dur = time() - start
-		
-		string = utils.text_scroller("Мама, знаешь что? ТЫ У МЕНЯ САМАЯ ЛУЧШАЯ НА СВЕТЕ МАМА! Я тебя люблю!", 20, dur)
-		
-		utils.print(f"\r{string}", end='')
+	await chooser.choice_file()
 
-		await asyncio.sleep(0.01)
+	#console = utils.VirtualConsole()
 
-	#chooser = FileChooser(gui=False)
+	#console.set_cursor_pos(0, 0)
 
-	#await chooser.loop()
+	#console.print("Choice a file".center(console.columns))
+
+	#console.print("World, world!", end='')
+
+	#console.update()
 
 if __name__ == "__main__":
-	#default_settings = utils.switch_to_raw()
+	default_settings = utils.switch_to_raw()
 
 	print(ansi.invisible_cursor, end='')
 
@@ -88,4 +86,4 @@ if __name__ == "__main__":
 		utils.print()
 		print(ansi.visible_cursor, end='')
 
-	#	utils.switch_to_default(default_settings)
+		utils.switch_to_default(default_settings)
