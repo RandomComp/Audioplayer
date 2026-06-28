@@ -33,6 +33,8 @@ class Input:
 	def reset(self) -> None:
 		loop = asyncio.get_running_loop()
 
+		self.gen = AsyncListGenerator(input_byte_gen(loop))
+
 		self.finished.clear()
 	
 	async def parse_esc(self) -> str:
