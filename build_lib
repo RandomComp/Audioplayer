@@ -1,0 +1,2 @@
+python3.10 virtual_console_setup.py build
+mv build/lib.linux-x86_64-cpython-310/virtual_console.cpython-310-x86_64-linux-gnu.so ./virtual_console.cpython-310-x86_64-linux-gnu.so
