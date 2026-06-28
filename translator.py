@@ -107,6 +107,15 @@ class Translator:
 		
 		return result
 
+	def translate_by_match(self, text: str, language: str) -> str | None:
+		words_dict = self.translator_dict[language]
+
+		for word in words_dict:
+			if text == word:
+				return words_dict[word]
+		
+		return None
+
 	def translate(self, _text: str, language: str | None=None) -> str:
 		if self.verbose:
 			self.__output(f"Input text: \"{_text}\"")
@@ -145,7 +154,10 @@ class Translator:
 				self.__output(f"Using cached \"{result}\" for \"{text}\"")
 
 		else:
-			result = self.translate_by_occurences(text, lang)
+			result = self.translate_by_match(text, lang)
+			
+			if not result:
+				result = self.translate_by_occurences(text, lang)
 		
 		#punc_re = r" |\.|,|!|\?|:|-|\"|\(|\)"
 		

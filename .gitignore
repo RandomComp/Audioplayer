@@ -13,4 +13,5 @@ __pycache__
 vosk-model-ru
 build
 repo_pushing_token
+stderr
 .fuse_*

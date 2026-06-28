@@ -1,8 +1,8 @@
 pyaudio
-pydub
 mutagen
 audioread
 numpy
 plyer
 wcwidth
 psutil
+pillow

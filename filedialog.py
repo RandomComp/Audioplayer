@@ -224,6 +224,6 @@ q -- quit menu""")
 		else:
 			result = await self.choice_file_cli(filters=filters)
 		
-			self.__output(ansi.clear_screen, end='')
+			tui.clear_screen()
 		
 		return result if self.multiple else result[0] if result else None

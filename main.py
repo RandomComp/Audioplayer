@@ -97,7 +97,7 @@ class AudioPlayerApp:
 		self.__output(f"\t-lang -- {changes_app_lang_str} \"{default_lang}\")")
 	
 	def see_warning_about_platform(self, platform: str) -> None:
-		self.__translated_output(f"Platform {platform} is not fully supported and may be errors")
+		self.__translated_output(f"Platform {platform} is not fully supported")
 	
 	def see_unrecognized_lang_msg(self, requested_lang: str, language: str | None=None) -> None:
 		unrecognized_lang_str = self.__translated(f"Unrecognized language", language=language)

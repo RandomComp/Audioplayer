@@ -73,13 +73,13 @@ class AudioLoader:
 	
 	def read(self) -> None:
 		with audioread.audio_open(self.file) as audio:
-			# audioread.AudioFile.
-
 			self.sample_rate = audio.samplerate
 
 			self.seconds = audio.duration
 
 			self.channels = audio.channels
+
+			print(audio)
 	
 	def close(self) -> None:
 		pass

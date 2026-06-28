@@ -1,15 +1,18 @@
 # Audio player
-This is my audio player written from scratch in Python using PyAudio and pydub libraries, using TUI without curses-like libraries
+This is my audio player written from scratch in Python using PyAudio and audioread libraries, using TUI without curses-like libraries
 
 # How to use
 
 ## Install the requirements
-**Install the apt requirements:**
+**Install the system requirements:**
+**For Debian-based OS:**
 ><br/><code>sudo apt update</code>
 
 ><code>sudo apt intall python3-dev portaudio19-dev</code>
+**For Arch-based OS:**
+><br/><code>sudo pacman -Sy portaudio</code>
 
-**Install the pip requirements to OS environment:**
+**Install the pip requirements (may broke your system, it is better to use a virtual environment (see below)):**
 
 ><br/><code>python -m pip install -r requirements.txt</code>
 
@@ -19,7 +22,7 @@ This is my audio player written from scratch in Python using PyAudio and pydub l
 ><br/><code>python -m venv venv</code>
 
 ## Activate your virtual environment
-**For windows:**
+**For Windows:**
 
 ><br/><code>venv\bin\activate</code>
 
@@ -37,7 +40,7 @@ This is my audio player written from scratch in Python using PyAudio and pydub l
 
 <code>python main.py</code>
 
-## Use your arrows on keyboard to navigate in the console menu, or control the audio player playback (seek or change volume):
+## Use your arrows on keyboard to control your audio player:
 **Use "←" and "→" to seek the audio**
 
 **Use "↑" and "↓" to control the audio volume**
@@ -46,4 +49,9 @@ This is my audio player written from scratch in Python using PyAudio and pydub l
 
 **Press 's' to input time and seek**
 
-# Wherever, you can quit the program using 'q' key
+**Press 'q' to quit the program**
+
+## Screenshots
+
+# IMPORTANT:
+## This is a work-in-progress. If you encounter any bugs, visual glitches, or unexpected behavior, please report them in the Issues section. Your feedback helps make r-audio better.

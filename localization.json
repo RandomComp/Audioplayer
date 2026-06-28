@@ -151,6 +151,8 @@
 		"language": "язык",
 		"languages": "языки",
 		"Sound normalized max": "Нормализованная максимальная громкость аудио",
-		"Audio normalized max": "Нормализованная максимальная громкость аудио"
+		"Audio normalized max": "Нормализованная максимальная громкость аудио",
+		"Opening DBus...": "Открытие сервера DBus...",
+		"Opening DBus done": "Сервер DBus открыт успешно"
 	}
 }

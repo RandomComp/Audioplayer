@@ -126,7 +126,7 @@ class AudioStream:
 		#self.stream.start_stream()
 
 	async def __write_wrapper(self, frames: np.ndarray, frames_size: int, bytes_per_frame: int=4) -> None:
-		frames = bytes(frames)
+		frames = bytes(frames.astype(np.float32))
 
 		frames_len = len(frames)
 

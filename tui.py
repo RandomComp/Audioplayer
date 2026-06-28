@@ -17,9 +17,11 @@ from utils import split_by_punctuation
 if sys.platform == "win32":
 	from msvcrt import getch
 else:
-	from termios import tcsetattr, tcgetattr, TCSADRAIN
+	from termios import tcsetattr, tcgetattr, TCSADRAIN, TIOCGWINSZ
 
 	from tty import setraw
+
+	import fcntl
 
 def __print(*values: object, sep: str=" ", end: str="\n", file=sys.stdout) -> None:
 	string = f"{sep.join(map(str, values))}{end}".replace("\n", "\n\r").expandtabs(4)
@@ -222,8 +224,6 @@ import numpy as np
 
 from PIL import Image
 
-import fcntl
-import termios
 import struct
 
 ASCII_CHARS = "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXVItfjrcxvun[]{}()|~<>~!;:,^\\. "[::-1]
@@ -369,12 +369,15 @@ def clean_images_kitty() -> None:
 
 	sys.stdout.flush()
 
-def get_char_size_emulator():
+def get_char_size_emulator() -> tuple[int, int]:
+	if sys.platform == "win32":
+		return 8, 16
+
 	# Структура winsize: 2 байта (строки), 2 байта (колонки), 2 байта (x пиксели), 2 байта (y пиксели)
 	fmt = "HHHH"
 	buf = struct.pack(fmt, 0, 0, 0, 0)
 	
-	result = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, buf)
+	result = fcntl.ioctl(sys.stdout.fileno(), TIOCGWINSZ, buf)
 
 	rows, cols, x_pixels, y_pixels = struct.unpack(fmt, result)
 	

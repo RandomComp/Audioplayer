@@ -178,9 +178,10 @@ class AudioPlayer(ServiceInterface):
 		self.sound_cur_chunk = None
 
 		self.id3_info = None
-
-		self.cover_dir = "/tmp/r_audio_album_cover.jpg" # temporary path for album cover
 		
+		self.cover_dir = "/tmp/r_audio_track_cover.jpg" # temporary path for track cover
+
+		self.track_id = 1
 
 		self.cover_drawed = False
 
@@ -212,7 +213,7 @@ class AudioPlayer(ServiceInterface):
 
 		self.volume = 1.0
 
-		self.play_speed = 1
+		self.play_speed = 1.0
 
 		self.chunk_seconds = 0.08
 		
@@ -354,7 +355,7 @@ class AudioPlayer(ServiceInterface):
 	def display_media_info(self, x: int, y: int, max_width: int) -> None:
 		columns, rows = tui.get_terminal_size()
 
-		lead, title = utils.parse_music_file_name(self.file_name.name)
+		lead = title = "Unknown"
 
 		if self.id3_info:
 			if self.id3_info["lead"]:
@@ -362,6 +363,9 @@ class AudioPlayer(ServiceInterface):
 			
 			if self.id3_info["title"]:
 				title = self.id3_info["title"]
+		
+		else:
+			lead, title = utils.parse_music_file_name(self.file_name.name)
 		
 		lead = str(lead).strip()
 		
@@ -485,7 +489,7 @@ class AudioPlayer(ServiceInterface):
 
 				max_bar_height = (columns * 16 * 3) // (32 * 8)
 			
-			total_bar_width = floor(max_bar_width / gap)
+			total_bar_width = floor(max_bar_width / (gap + 1))
 			
 			bars: np.ndarray[np.float64] = calculate_equalizer_bars(self.sound_cur_chunk, total_bar_width, self.sound_sample_rate) * max_bar_height * c_bars_cnt
 
@@ -518,9 +522,7 @@ class AudioPlayer(ServiceInterface):
 
 				row = ''.join(row)
 
-				row = row[:columns]
-
-				tui.sys.stdout.write(f"{ansi.white_fg}{tui.center(row, columns)}{ansi.default}")
+				tui.sys.stdout.write(f"{ansi.white_fg}{row}{ansi.default}")
 
 		tui.set_cursor_pos(1, rows)
 
@@ -608,7 +610,7 @@ class AudioPlayer(ServiceInterface):
 		result: dict = dict()
 
 		for i, key in enumerate(keys):
-			result[new_keys[i]] = id.get(key)
+			result[new_keys[i]] = str(id.get(key))
 		
 		result["pic"] = _bytes
 
@@ -632,6 +634,9 @@ class AudioPlayer(ServiceInterface):
 			if self.cover_dir and self.id3_info["pic"]:
 				with open(self.cover_dir, "wb") as f:
 					f.write(self.id3_info["pic"])
+			
+		if self.bus:
+			self.emit_properties_changed({"Metadata": self.get_metadata()})
 
 	async def play_loop(self):
 		if not self.stream:
@@ -687,10 +692,17 @@ class AudioPlayer(ServiceInterface):
 				pos = int(self.second * sample_second)
 
 				chunk_samples = samples[pos:(pos + sample_chunks)]
+				chunk_samples_len = len(chunk_samples)
 
 				#coef = ((self.second % (seconds_coef * 2)) - seconds_coef) / seconds_coef
 
-				chunk_samples = chunk_samples[::self.play_speed]
+				orig_indices = np.arange(chunk_samples_len)
+				new_indices = np.linspace(0, chunk_samples_len - 1, int(chunk_samples_len * abs(self.play_speed)))
+
+				chunk_samples = np.interp(new_indices, orig_indices, chunk_samples)
+
+				if self.play_speed < 0:
+					chunk_samples = chunk_samples[::-1]
 
 				chunk_samples = np.clip(chunk_samples * (self.volume ** 2), -1.0, 1.0)
 
@@ -704,7 +716,7 @@ class AudioPlayer(ServiceInterface):
 				if self.mock:
 					self.write_proc = asyncio.create_task(asyncio.sleep(self.chunk_seconds), name="AudioStream mock write")
 				else:
-					self.write_proc = asyncio.create_task(self.stream.write(chunk_samples, sample_chunks // np.abs(self.play_speed), self.sound_sample_width), name="AudioStream write")
+					self.write_proc = asyncio.create_task(self.stream.write(chunk_samples, floor(sample_chunks / abs(self.play_speed)), self.sound_sample_width), name="AudioStream write")
 
 				self.second += self.chunk_seconds * self.play_speed
 
@@ -715,7 +727,7 @@ class AudioPlayer(ServiceInterface):
 
 					break
 				
-				self.second = self.second % self.seconds
+				self.second = min(self.second, self.seconds)
 
 				if not self.is_playing() and not self.playback_ended.is_set():
 					await self.wait_for_playing()
@@ -734,19 +746,19 @@ class AudioPlayer(ServiceInterface):
 	
 	def play(self) -> None:
 		self.state = "Playing"
-		
-		self.stream.start()
 
 		if self.bus:
 			self.emit_properties_changed({'PlaybackStatus': self.state})
+		
+		self.stream.start()
 	
 	def pause(self) -> None:
 		self.state = "Paused"
-		
-		self.stream.stop()
 
 		if self.bus:
 			self.emit_properties_changed({'PlaybackStatus': self.state})
+		
+		self.stream.stop()
 	
 	async def wait_for_playing(self) -> None:
 		while self.state != "Playing":
@@ -867,6 +879,8 @@ class AudioPlayer(ServiceInterface):
 			self.input.loop(),
 			self.timer(self.chunk_seconds)
 		)
+
+		self.track_id += 1
 	
 	async def reset(self) -> None:
 		self.__translated_output("Reseting AudioPlayer...")
@@ -892,7 +906,7 @@ class AudioPlayer(ServiceInterface):
 
 		self.seek.clear()
 
-		# self.id3_info = None
+		# self.id3_info = None	
 	
 	async def close(self) -> None:
 		self.play()
@@ -949,15 +963,30 @@ class AudioPlayer(ServiceInterface):
 	def PlaybackStatus(self) -> 's':
 		return self.state
 
-	@dbus_property(access=PropertyAccess.READ)
-	def Metadata(self) -> 'a{sv}':
+	def get_metadata(self) -> 'a{sv}':
+		lead = title = "Unknown"
+
+		if self.id3_info:
+			if self.id3_info["lead"]:
+				lead = self.id3_info["lead"]
+			
+			if self.id3_info["title"]:
+				title = self.id3_info["title"]
+		
+		else:
+			lead, title = utils.parse_music_file_name(self.file_name.name)
+
 		return {
-			"mpris:trackid": Variant("o", "/com/r_audio/track/1"),
+			"mpris:trackid": Variant("o", f"/com/r_audio/track/{self.track_id}"),
 			"mpris:length": Variant("x", int(self.seconds * 1000 * 1000)),
 			"mpris:artUrl": Variant("s", f"file://{self.cover_dir}"),
-			"xesam:title": Variant("s", str(self.id3_info["title"])),
-			"xesam:artist": Variant("as", [str(self.id3_info["lead"])]),
+			"xesam:title": Variant("s", title),
+			"xesam:artist": Variant("as", [lead]),
 		}
+
+	@dbus_property(access=PropertyAccess.READ)
+	def Metadata(self) -> 'a{sv}':
+		return self.get_metadata()
 
 	@dbus_property(access=PropertyAccess.READ)
 	def CanPause(self) -> 'b':
@@ -1004,27 +1033,43 @@ class AudioPlayer(ServiceInterface):
 		return int(self.second * 1000 * 1000)
 
 	@method()
+	def SetPosition(self, _track_id: 'o', val: 'x'):
+		track_id = int(str(_track_id).split("/")[-1])
+
+		if track_id != self.track_id:
+			return
+
+		self.seek_second(val / (1000 * 1000))
+
+		self.Seeked(val)
+
+	@method()
 	def Seek(self, val: 'x'):
 		self.seek_second(self.second + (val / (1000 * 1000)))
 
 		self.Seeked(val)
 	
-	@method(name='Seeked')
+	@method(name="Seeked")
 	def Seeked(self, Position: 'x'):
 		pass
 
-	# --- Методы управления ---
 	@method()
 	async def Play(self):
 		self.play()
+		
+		await self.update_display.invoke()
 
 	@method()
 	async def Pause(self):
 		self.pause()
+		
+		await self.update_display.invoke()
 
 	@method()
 	async def Stop(self):
 		self.pause()
+		
+		await self.update_display.invoke()
 
 	@method()
 	async def PlayPause(self):
@@ -1032,6 +1077,8 @@ class AudioPlayer(ServiceInterface):
 			self.pause()
 		else:
 			self.play()
+		
+		await self.update_display.invoke()
 			
 	# @method()
 	# async def Previous(self):
@@ -1069,7 +1116,11 @@ self.play_speed = {self.play_speed}
 self.chunk_seconds = {self.chunk_seconds}
 self.extra_volume = {self.extra_volume}
 self.mock = {self.mock}
-self.guru = {self.guru}"""
+self.guru = {self.guru}
+self.bus_name = {self.bus_name}
+self.cover_dir = {self.cover_dir}
+self.track_id = {self.track_id}
+self.cover_drawed = {self.cover_drawed}"""
 	
 	async def __aenter__(self):
 		await self.open()
