@@ -118,12 +118,10 @@ class AudioStream:
 			self.__translated_output("Opening AudioStream done")
 
 	def start(self) -> None:
+		# if self.stream != None and not self.is_playing.is_set():
+		# 	self.stream.start_stream()
+		
 		self.is_playing.set()
-
-		#if self.stream == None:
-		#	self.open()
-
-		#self.stream.start_stream()
 
 	async def __write_wrapper(self, frames: np.ndarray, frames_size: int, bytes_per_frame: int=4) -> None:
 		frames = bytes(frames.astype(np.float32))
@@ -202,12 +200,10 @@ class AudioStream:
 		raise NotImplementedError()
 
 	def stop(self) -> None:
+		# if self.stream != None and self.is_playing.is_set():
+		# 	self.stream.stop_stream()
+		
 		self.is_playing.clear()
-
-		#if self.stream == None:
-		#	return
-
-		#self.stream.stop_stream()
 
 	def close_stream(self) -> None:
 		if self.stream != None:

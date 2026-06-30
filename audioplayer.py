@@ -28,6 +28,8 @@ from math import floor, ceil
 
 from io import BytesIO
 
+import os
+
 from dbus_next.aio import MessageBus
 from dbus_next.service import ServiceInterface, method, dbus_property, PropertyAccess
 from dbus_next import Variant
@@ -92,7 +94,7 @@ def calculate_equalizer_bars(
 		vol_db = 20.0 * np.log10(amplitude + 1e-5)
 		
 		# -85, -25
-		normalized = np.interp(vol_db, [-85, 0], [0, 1])
+		normalized = np.interp(vol_db, [-80, 0], [0, 1])
 		current_bars.append(normalized)
 
 	return np.asarray(current_bars)
@@ -179,7 +181,9 @@ class AudioPlayer(ServiceInterface):
 
 		self.id3_info = None
 		
-		self.cover_dir = "/tmp/r_audio_track_cover.jpg" # temporary path for track cover
+		self.cover_name = "r_audio_track_cover_" # temporary path for track cover
+		self.cover_w = 1
+		self.cover_h = 1
 
 		self.track_id = 1
 
@@ -345,12 +349,20 @@ class AudioPlayer(ServiceInterface):
 		
 		y = 3
 
+		size = 30
+
+		c_w, c_h = tui.get_char_size_emulator()
+
+		y += (size * self.cover_h * c_w) / (self.cover_w * c_h)
+		
+		y += 1
+		
 		if lead:
 			y += 2
 
 		y += 2
 
-		return y
+		return ceil(y)
 	
 	def display_media_info(self, x: int, y: int, max_width: int) -> None:
 		columns, rows = tui.get_terminal_size()
@@ -370,15 +382,15 @@ class AudioPlayer(ServiceInterface):
 		lead = str(lead).strip()
 		
 		title = str(title).strip()
-
-		title_message = f"{ansi.bold}{ansi.red_fg}{title}{ansi.default}"
 		
+		size = 30
+
+		c_w, c_h = tui.get_char_size_emulator()
+
 		if self.id3_info != None and self.id3_info["pic"] != None and \
 			(not self.cover_drawed or 
 			self.old_columns != columns or self.old_rows != rows):
 			tui.clean_images_kitty()
-
-			size = 30
 
 			self.cover_drawed = True
 
@@ -392,24 +404,22 @@ class AudioPlayer(ServiceInterface):
 
 			img = img.convert("RGB")
 
-			c_w, c_h = tui.get_char_size_emulator()
-
-			w, h = img.size
-			aspect_ratio = h / w
-			new_height = int(size * c_h * aspect_ratio * 0.55)
+			self.cover_w, self.cover_h = img.size
+			aspect_ratio = self.cover_h / self.cover_w
+			new_height = int(size * aspect_ratio * c_w)
 			img = img.resize((size * c_w, new_height))
 
-			y -= ceil(size / 2)
+			tui.show_image_kitty(x - (size // 2), y, img)
+		
+		y += (size * self.cover_h * c_w) / (self.cover_w * c_h)
+		
+		y += 1
 
-			tui.show_image_kitty(x - size // 2, y, img)
-
-			y += ceil(size / 2)
+		title_message = f"{ansi.bold}{ansi.red_fg}{title}{ansi.default}"
 		
-		y += 2
+		tui.set_cursor_pos(x - (utils.len(title) // 2), y)
 		
-		tui.set_cursor_pos(x - (len(title) // 2), y)
-		
-		self.__output(f"{title_message}", end='')
+		self.__output(title_message, end='')
 
 		y += 1
 
@@ -418,13 +428,13 @@ class AudioPlayer(ServiceInterface):
 		
 			tui.set_cursor_pos(x - (line_width // 2), y)
 
-			self.__output(f"{line_width * '─'}", end='')
+			self.__output(line_width * '─', end='')
 
 			y += 1
 
 			lead_message = f"{ansi.bold}{ansi.cyan_fg}{lead}{ansi.default}"
 		
-			tui.set_cursor_pos(x - (len(lead) // 2), y)
+			tui.set_cursor_pos(x - (utils.len(lead) // 2), y)
 
 			self.__output(lead_message, end='')
 
@@ -432,7 +442,7 @@ class AudioPlayer(ServiceInterface):
 
 		y += 1
 		
-		play_symbol = "▶ " if self.state == "Paused" else "||"
+		play_symbol = "▶ " if self.is_paused() else "||"
 		
 		tui.set_cursor_pos(x - 1, y)
 
@@ -468,7 +478,9 @@ class AudioPlayer(ServiceInterface):
 
 		self.display_volume(self.volume, columns)
 
-		self.display_media_info(columns // 2, (rows // 2) - (self.display_media_info_lines() // 2), columns)
+		media_info_line = self.display_media_info_lines()
+
+		self.display_media_info(columns // 2, 10, columns)
 
 		# 32:3 1050x700:150x50 = 7x14, 1050x700:131x47=8x15
 
@@ -480,7 +492,7 @@ class AudioPlayer(ServiceInterface):
 		if len(self.sound_cur_chunk) > 0:
 			# max_bar_height = ((columns * 16 * 3) // 32) // 8
 
-			max_bar_height = rows // 2
+			max_bar_height = rows - 1 - 8 - media_info_line
 
 			max_bar_width = (max_bar_height * 8 * 32) // (16 * 3)
 
@@ -502,27 +514,27 @@ class AudioPlayer(ServiceInterface):
 				for bar in bars:
 					index = int(bar % c_bars_cnt)
 						
-					bar = int(bar / c_bars_cnt)
+					bar = floor(bar / c_bars_cnt)
 
 					if bar == distance_from_floor:
 						row.append(c_bars[index])
 						
-						row.append(" " * gap)
+						row.append("." * gap)
 
 						continue
 
 					if bar >= distance_from_floor:
 						row.append(c_bars[-1])
 					else:
-						row.append(" ")
+						row.append(".")
 					
-					row.append(" " * gap)
+					row.append("." * gap)
 
 				tui.set_cursor_pos(1, current_terminal_y)
 
 				row = ''.join(row)
 
-				tui.sys.stdout.write(f"{ansi.white_fg}{row}{ansi.default}")
+				tui.sys.stdout.write(f"{ansi.white_fg}{tui.center(row, columns)}{ansi.default}")
 
 		tui.set_cursor_pos(1, rows)
 
@@ -543,11 +555,10 @@ class AudioPlayer(ServiceInterface):
 		
 		try:
 			result = AudioLoader(file)
-		except:
-			if self.verbose:
-				self.__translated_output("Loading error")
+		except Exception as e:
+			self.__translated_output("Audio loading error")
 
-			raise RuntimeError(f"\"{file}\" {self.__translated('is not valid audio file')}")
+			raise RuntimeError(f"\"{file}\": {e}")
 
 		self.file_name = file
 
@@ -630,10 +641,20 @@ class AudioPlayer(ServiceInterface):
 
 		if is_mp3:
 			self.id3_info = self.load_id3(file)
+		
+			cover_dir = self.get_cover_name()
 
-			if self.cover_dir and self.id3_info["pic"]:
-				with open(self.cover_dir, "wb") as f:
+			if cover_dir and self.id3_info["pic"]:
+				with open(cover_dir, "wb") as f:
 					f.write(self.id3_info["pic"])
+
+				_bytes = self.id3_info["pic"]
+
+				img = Image.open(BytesIO(_bytes))
+
+				img = img.convert("RGB")
+
+				self.cover_w, self.cover_h = img.size
 			
 		if self.bus:
 			self.emit_properties_changed({"Metadata": self.get_metadata()})
@@ -869,6 +890,9 @@ class AudioPlayer(ServiceInterface):
 			if not self.is_playing() and not self.playback_ended.is_set():
 				await self.wait_for_playing()
 	
+	def get_cover_name(self) -> str:
+		return f"/tmp/{self.cover_name}_{self.track_id}.jpg"
+	
 	async def loop(self) -> None:
 		tui.clear_screen()
 
@@ -879,6 +903,12 @@ class AudioPlayer(ServiceInterface):
 			self.input.loop(),
 			self.timer(self.chunk_seconds)
 		)
+
+		if self.cover_name:
+			cover_dir = self.get_cover_name()
+
+			if os.path.isfile(cover_dir):
+				os.remove(cover_dir)
 
 		self.track_id += 1
 	
@@ -923,6 +953,8 @@ class AudioPlayer(ServiceInterface):
 
 		if self.bus:
 			await self.bus.release_name(self.bus_name)
+
+			self.bus.disconnect()
 
 		self.bus = None
 	
@@ -975,11 +1007,13 @@ class AudioPlayer(ServiceInterface):
 		
 		else:
 			lead, title = utils.parse_music_file_name(self.file_name.name)
+		
+		cover_dir = self.get_cover_name()
 
 		return {
 			"mpris:trackid": Variant("o", f"/com/r_audio/track/{self.track_id}"),
 			"mpris:length": Variant("x", int(self.seconds * 1000 * 1000)),
-			"mpris:artUrl": Variant("s", f"file://{self.cover_dir}"),
+			"mpris:artUrl": Variant("s", f"file://{cover_dir}"),
 			"xesam:title": Variant("s", title),
 			"xesam:artist": Variant("as", [lead]),
 		}
@@ -1118,7 +1152,8 @@ self.extra_volume = {self.extra_volume}
 self.mock = {self.mock}
 self.guru = {self.guru}
 self.bus_name = {self.bus_name}
-self.cover_dir = {self.cover_dir}
+self.cover_name_template = {self.cover_name}
+self.cover_name = {self.get_cover_name()}
 self.track_id = {self.track_id}
 self.cover_drawed = {self.cover_drawed}"""
 	
