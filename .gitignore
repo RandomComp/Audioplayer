@@ -9,9 +9,11 @@
 *.bak
 *.so
 test.py
+test_gui.py
 __pycache__
 vosk-model-ru
 build
 repo_pushing_token
+err
 stderr
 .fuse_*

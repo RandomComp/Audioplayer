@@ -53,9 +53,11 @@ def calculate_equalizer_bars(
 	num_bars: int = 16,
 	sample_rate: int = 44100
 ) -> np.ndarray[np.float64]:
-	
+	if num_bars < 0:
+		return np.zeros(1)
+
 	if audio_chunk is None or audio_chunk.size < num_bars:
-		return [0] * num_bars
+		return np.zeros(num_bars)
 
 	audio_chunk = np.ascontiguousarray(audio_chunk, dtype=np.float32).flatten()
 	chunk_len = len(audio_chunk)
@@ -80,7 +82,7 @@ def calculate_equalizer_bars(
 		
 		if start_idx == end_idx:
 			end_idx = min(start_idx + 1, len(fft_data))
-			
+		
 		band = fft_data[start_idx:end_idx]
 		
 		if len(band) == 0:
@@ -92,8 +94,7 @@ def calculate_equalizer_bars(
 		amplitude = 0.7 * np.max(band) + 0.3 * np.mean(band)
 		
 		vol_db = 20.0 * np.log10(amplitude + 1e-5)
-		
-		# -85, -25
+
 		normalized = np.interp(vol_db, [-80, 0], [0, 1])
 		current_bars.append(normalized)
 
@@ -181,7 +182,7 @@ class AudioPlayer(ServiceInterface):
 
 		self.id3_info = None
 		
-		self.cover_name = "r_audio_track_cover_" # temporary path for track cover
+		self.cover_name = "r_audio_track_cover" # temporary path for track cover
 		self.cover_w = 1
 		self.cover_h = 1
 
@@ -259,8 +260,8 @@ class AudioPlayer(ServiceInterface):
 
 			root = AudioPlayerMPrisRootInterface()
 
-			self.bus.export('/org/mpris/MediaPlayer2', root)
-			self.bus.export('/org/mpris/MediaPlayer2', self)
+			self.bus.export("/org/mpris/MediaPlayer2", root)
+			self.bus.export("/org/mpris/MediaPlayer2", self)
 
 			await self.bus.request_name(self.bus_name)
 
@@ -284,13 +285,13 @@ class AudioPlayer(ServiceInterface):
 
 		if self.stream:
 			if self.verbose:
-				self.__translated_output("Reopening stream... ")
+				self.__translated_output("Reopening stream...")
 
 			await self.stream.close()
 
 			self.stream = None
 		elif self.verbose:
-			self.__translated_output("Opening stream... ")
+			self.__translated_output("Opening stream...")
 
 		self.stream = audiostream.AudioStream(self.sample_rate, self.channels, dtype=audiostream.paFloat32, input=False, chunked=False, translator=self.translator)
 
@@ -333,7 +334,7 @@ class AudioPlayer(ServiceInterface):
 
 		self.__output(f"\r{ansi.clear}{progress}", end='')
 	
-	def display_media_info_lines(self):
+	def get_song_title(self) -> tuple[str, str]:
 		lead, title = utils.parse_music_file_name(self.file_name.name)
 
 		if self.id3_info:
@@ -344,8 +345,12 @@ class AudioPlayer(ServiceInterface):
 				title = self.id3_info["title"]
 		
 		lead = str(lead).strip()
-		
 		title = str(title).strip()
+		
+		return (title, lead)
+	
+	def display_media_info_lines(self):
+		title, lead = self.get_song_title()
 		
 		y = 3
 
@@ -367,21 +372,7 @@ class AudioPlayer(ServiceInterface):
 	def display_media_info(self, x: int, y: int, max_width: int) -> None:
 		columns, rows = tui.get_terminal_size()
 
-		lead = title = "Unknown"
-
-		if self.id3_info:
-			if self.id3_info["lead"]:
-				lead = self.id3_info["lead"]
-			
-			if self.id3_info["title"]:
-				title = self.id3_info["title"]
-		
-		else:
-			lead, title = utils.parse_music_file_name(self.file_name.name)
-		
-		lead = str(lead).strip()
-		
-		title = str(title).strip()
+		title, lead = self.get_song_title()
 		
 		size = 30
 
@@ -519,16 +510,16 @@ class AudioPlayer(ServiceInterface):
 					if bar == distance_from_floor:
 						row.append(c_bars[index])
 						
-						row.append("." * gap)
+						row.append(" " * gap)
 
 						continue
 
 					if bar >= distance_from_floor:
 						row.append(c_bars[-1])
 					else:
-						row.append(".")
+						row.append(" ")
 					
-					row.append("." * gap)
+					row.append(" " * gap)
 
 				tui.set_cursor_pos(1, current_terminal_y)
 
@@ -553,16 +544,33 @@ class AudioPlayer(ServiceInterface):
 		if self.verbose:
 			self.__output(f"{self.__translated('Loading')} \"{file}\"...")
 		
+		audio_loading_error = False
+
+		e = ""
+		
 		try:
 			result = AudioLoader(file)
-		except Exception as e:
-			self.__translated_output("Audio loading error")
+		except Exception as _e:
+			e = _e
 
-			raise RuntimeError(f"\"{file}\": {e}")
+			audio_loading_error = True
+		
+		if audio_loading_error:
+			raise RuntimeError(f"Audio loading error: \"{file}\": {e}")
 
 		self.file_name = file
 
-		result.read()
+		e = ""
+
+		try:
+			result.read()
+		except Exception as _e:
+			e = _e
+
+			audio_loading_error = True
+		
+		if audio_loading_error:
+			raise RuntimeError(f"Audio loading error: \"{file}\": {e}")
 
 		audio = result.load()
 
@@ -621,7 +629,13 @@ class AudioPlayer(ServiceInterface):
 		result: dict = dict()
 
 		for i, key in enumerate(keys):
-			result[new_keys[i]] = str(id.get(key))
+			value = id.get(key)
+
+			if not value:
+				result[new_keys[i]] = None
+
+			else:
+				result[new_keys[i]] = str(value)
 		
 		result["pic"] = _bytes
 
@@ -701,8 +715,11 @@ class AudioPlayer(ServiceInterface):
 
 		samples = fade(samples, fade_samples, fade_step, out=True) # Fade out
 
+		samples_len = len(samples)
+
 		try:
-			while not self.playback_ended.is_set():
+			while not self.playback_ended.is_set() \
+				and (samples_len - sample_chunks) >= 4:
 				self.ready_to_quit.clear()
 
 				if not self.stream.is_playing.is_set():
@@ -996,17 +1013,7 @@ class AudioPlayer(ServiceInterface):
 		return self.state
 
 	def get_metadata(self) -> 'a{sv}':
-		lead = title = "Unknown"
-
-		if self.id3_info:
-			if self.id3_info["lead"]:
-				lead = self.id3_info["lead"]
-			
-			if self.id3_info["title"]:
-				title = self.id3_info["title"]
-		
-		else:
-			lead, title = utils.parse_music_file_name(self.file_name.name)
+		title, lead = self.get_song_title()
 		
 		cover_dir = self.get_cover_name()
 
@@ -1036,7 +1043,7 @@ class AudioPlayer(ServiceInterface):
 
 	@dbus_property(access=PropertyAccess.READ)
 	def CanGoPrevious(self) -> 'b':
-		return False
+		return True
 
 	@dbus_property(access=PropertyAccess.READ)
 	def CanSeek(self) -> 'b':
@@ -1117,6 +1124,10 @@ class AudioPlayer(ServiceInterface):
 	# @method()
 	# async def Previous(self):
 	# 	print("[D-Bus] Команда: ПРЕДЫДУЩИЙ ТРЕК")
+
+	@method()
+	async def Previous(self):
+		self.seek_second(0)
 
 	@method()
 	async def Next(self):

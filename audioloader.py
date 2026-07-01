@@ -72,14 +72,22 @@ class AudioLoader:
 		return audio
 	
 	def read(self) -> None:
-		with audioread.audio_open(self.file) as audio:
-			self.sample_rate = audio.samplerate
+		backend_error = False
 
-			self.seconds = audio.duration
+		try:
+			with audioread.audio_open(self.file) as audio:
+				self.sample_rate = audio.samplerate
 
-			self.channels = audio.channels
+				self.seconds = audio.duration
 
-			print(audio)
+				self.channels = audio.channels
+
+				print(audio)
+		except audioread.exceptions.NoBackendError:
+			backend_error = True
+		
+		if backend_error:
+			raise RuntimeError(f"No available backend")
 	
 	def close(self) -> None:
 		pass

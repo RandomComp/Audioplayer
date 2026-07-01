@@ -14,9 +14,9 @@ from pathlib import Path
 if __name__ == "__main__":
 	# path = Path("/run/media/rdev/SSD/Downloads/Песни/Любимые песни/")
 
-	path = "/run/media/rdev/SSD/Downloads/Песни/Любимые песни/MC_Zali_-_Lyuba_Ivana_79477133.mp3"
+	path = "/run/media/rdev/SSD/Downloads/Песни/Любимые песни/Jeanette -- Porque te vas.mp3"
 	
-	img_path = "/home/rdev/Загрузки/MC Zali -- Люба Ивана.jpg"
+	img_path = "/home/rdev/Загрузки/Jeanette -- Porque te vas.jpg"
 
 	_bytes = io.BytesIO()
 

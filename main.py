@@ -186,24 +186,26 @@ class AudioPlayerApp:
 
 		self.player = AudioPlayer(mock=self.mock, verbose=True, guru=self.guru, translator=self.translator)
 		
-		for file in files:
-			self.__output(f"{selected_file_str}: {ansi.cyan_fg}\"", file.name, f"\"{ansi.default}", sep="")
+		try:
+			for file in files:
+				self.__output(f"{selected_file_str}: {ansi.cyan_fg}\"", file.name, f"\"{ansi.default}", sep="")
 
-			await self.player.open()
+				await self.player.open()
 
-			self.player.load(file)
+				self.player.load(file)
 
-			await self.player.open_dbus()
-				
-			self.player.play()
+				await self.player.open_dbus()
+					
+				self.player.play()
 
-			await self.player.loop()
+				await self.player.loop()
 
-			self.__translated_output()
+				self.__translated_output()
 		
-		await self.player.close()
+		finally:
+			await self.player.close()
 		
-		await self.player.clean()
+			await self.player.clean()
 	
 	def run(self, script_name: str, platform: str, *args, **kwargs) -> None:
 		asyncio.run(self.main(script_name, platform, *args, **kwargs))
